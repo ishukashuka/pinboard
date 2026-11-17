@@ -64,44 +64,47 @@
       @dragover.prevent
       @drop.prevent="onDrop"
     >
-      <!-- Infinite World Transform Container -->
-      <div class="canvas-world" :style="worldTransformStyle">
-        <!-- SVG Connectors Layer -->
-        <ConnectorsLayer
-          :connectors="connectors"
-          :objects="objects"
-          :selected-connector-id="selectedConnectorId"
-          :draft-connector="draftConnector"
-          :snap-target="snapTarget"
-          :zoom="camera.zoom"
-          @select-connector="onSelectConnector"
-          @start-drag-endpoint="onStartDragEndpoint"
-        />
+      <!-- Infinite World Pan Layer (GPU hardware accelerated translation) -->
+      <div class="canvas-pan-layer" :style="panLayerStyle">
+        <!-- Crisp Infinite World (CSS zoom ensures 100% native vector & font rasterization) -->
+        <div class="canvas-world" :style="worldZoomStyle">
+          <!-- SVG Connectors Layer -->
+          <ConnectorsLayer
+            :connectors="connectors"
+            :objects="objects"
+            :selected-connector-id="selectedConnectorId"
+            :draft-connector="draftConnector"
+            :snap-target="snapTarget"
+            :zoom="camera.zoom"
+            @select-connector="onSelectConnector"
+            @start-drag-endpoint="onStartDragEndpoint"
+          />
 
-        <!-- Board Objects (Images, Notes, Snippets, Links, Icons, Diagram Nodes) -->
-        <BoardObjectView
-          v-for="obj in objects"
-          :key="obj.id"
-          :object="obj"
-          :is-selected="selectedIds.has(obj.id)"
-          :is-editing="editingId === obj.id"
-          :is-connector-tool="activeTool === 'connector'"
-          :zoom="camera.zoom"
-          :class="{ 'flash-highlight': highlightedId === obj.id }"
-          @select="onObjectSelect"
-          @start-drag="onStartObjectDrag"
-          @start-resize="onStartObjectResize"
-          @start-connect="onStartConnect"
-          @start-editing="startEditing"
-          @exit-editing="exitEditing"
-          @update-content="updateObjectContent"
-          @update-title="updateObjectTitle"
-          @update-meta="updateObjectMeta"
-          @copy-content="copyObjectContent"
-          @duplicate="duplicateSingleObject"
-          @delete="deleteSingleObject"
-          @save-request="triggerSave"
-        />
+          <!-- Board Objects (Images, Notes, Snippets, Links, Icons, Diagram Nodes) -->
+          <BoardObjectView
+            v-for="obj in objects"
+            :key="obj.id"
+            :object="obj"
+            :is-selected="selectedIds.has(obj.id)"
+            :is-editing="editingId === obj.id"
+            :is-connector-tool="activeTool === 'connector'"
+            :zoom="camera.zoom"
+            :class="{ 'flash-highlight': highlightedId === obj.id }"
+            @select="onObjectSelect"
+            @start-drag="onStartObjectDrag"
+            @start-resize="onStartObjectResize"
+            @start-connect="onStartConnect"
+            @start-editing="startEditing"
+            @exit-editing="exitEditing"
+            @update-content="updateObjectContent"
+            @update-title="updateObjectTitle"
+            @update-meta="updateObjectMeta"
+            @copy-content="copyObjectContent"
+            @duplicate="duplicateSingleObject"
+            @delete="deleteSingleObject"
+            @save-request="triggerSave"
+          />
+        </div>
       </div>
 
       <!-- Marquee Selection Rectangle (Screen Space) -->
@@ -362,14 +365,20 @@ const canvasCursor = computed(() => {
   return 'default';
 });
 
-// Viewport styles
-const worldTransformStyle = computed(() => {
+// Viewport styles (GPU pan container + Crisp native rasterization zoom)
+const panLayerStyle = computed(() => {
   const panX = Math.round(camera.panX);
   const panY = Math.round(camera.panY);
+  return {
+    transform: `translate(${panX}px, ${panY}px)`,
+    transformOrigin: '0 0',
+  };
+});
+
+const worldZoomStyle = computed(() => {
   const zoom = Math.abs(camera.zoom - 1) < 0.005 ? 1 : camera.zoom;
   return {
-    transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
-    transformOrigin: '0 0',
+    zoom: zoom as any,
   };
 });
 
@@ -2154,6 +2163,16 @@ async function toggleAlwaysOnTop() {
   background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1.2px, transparent 1.2px);
 }
 
+.canvas-pan-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  transform-style: flat;
+}
+
 .canvas-world {
   position: absolute;
   top: 0;
@@ -2163,6 +2182,7 @@ async function toggleAlwaysOnTop() {
   pointer-events: auto;
   transform-style: flat;
   backface-visibility: visible;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

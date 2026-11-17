@@ -246,6 +246,7 @@
       :key="anchor"
       class="connection-anchor"
       :class="[`anchor-${anchor}`, { 'is-visible': isConnectorTool || isHovered || isSelected }]"
+      :style="getAnchorStyle()"
       @mousedown.stop="onAnchorMouseDown(anchor, $event)"
       :title="`Connect from ${anchor}`"
     ></div>
@@ -256,6 +257,7 @@
         v-for="handle in handles"
         :key="handle"
         :class="['resize-handle', `handle-${handle}`]"
+        :style="getHandleStyle(handle)"
         @mousedown="onHandleMouseDown(handle, $event)"
       ></div>
     </template>
@@ -317,11 +319,42 @@ const anchors: AnchorPosition[] = ['top', 'right', 'bottom', 'left'];
 const isHovered = ref(false);
 
 const objectStyle = computed(() => ({
-  transform: `translate(${Math.round(props.object.x)}px, ${Math.round(props.object.y)}px)`,
+  left: `${Math.round(props.object.x)}px`,
+  top: `${Math.round(props.object.y)}px`,
   width: `${props.object.width}px`,
   height: `${props.object.height}px`,
   zIndex: props.isSelected ? 500 + props.object.z_index : 10 + props.object.z_index,
 }));
+
+function getHandleStyle(handle: string) {
+  const z = props.zoom > 0 ? props.zoom : 1;
+  const size = Math.max(5, Math.min(22, 8 / z));
+  const half = -(size / 2);
+  const style: Record<string, string> = {
+    width: `${size}px`,
+    height: `${size}px`,
+  };
+  if (handle.includes('n')) style.top = `${half}px`;
+  if (handle.includes('s')) style.bottom = `${half}px`;
+  if (handle.includes('w')) style.left = `${half}px`;
+  if (handle.includes('e')) style.right = `${half}px`;
+  if (handle === 'n' || handle === 's') {
+    style.left = `calc(50% + ${half}px)`;
+  }
+  if (handle === 'e' || handle === 'w') {
+    style.top = `calc(50% + ${half}px)`;
+  }
+  return style;
+}
+
+function getAnchorStyle() {
+  const z = props.zoom > 0 ? props.zoom : 1;
+  const size = Math.max(6, Math.min(26, 10 / z));
+  return {
+    width: `${size}px`,
+    height: `${size}px`,
+  };
+}
 
 // Check if this text object represents a code snippet
 const isCodeSnippet = computed(() => {
