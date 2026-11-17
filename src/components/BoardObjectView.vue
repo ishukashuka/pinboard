@@ -140,35 +140,15 @@
             />
           </div>
           <div v-else class="note-content-preview">
-            <div v-if="parsedLines.length === 0" class="empty-note-hint">
+            <div v-if="!object.content || !object.content.trim()" class="empty-note-hint">
               Empty note. Press i or Enter to edit...
             </div>
-            <!-- Formatted Markdown Checkboxes & Content -->
             <div
-              v-for="(line, idx) in parsedLines"
-              :key="idx"
-              class="note-line"
-              :class="{ 'is-checkbox': line.isCheckbox }"
-            >
-              <template v-if="line.isCheckbox">
-                <span
-                  class="checkbox-box"
-                  :class="{ 'is-checked': line.checked }"
-                  @click.stop="toggleCheckbox(idx)"
-                >
-                  <Check v-if="line.checked" :size="11" class="check-mark" />
-                </span>
-                <span class="checkbox-text" :class="{ 'is-strike': line.checked }">
-                  {{ line.text }}
-                </span>
-              </template>
-              <template v-else-if="line.isTagLine">
-                <!-- Tag line rendered in footer -->
-              </template>
-              <template v-else>
-                <span>{{ line.text }}</span>
-              </template>
-            </div>
+              v-else
+              class="markdown-rendered"
+              v-html="renderedMarkdown"
+              @click="onMarkdownClick"
+            ></div>
           </div>
         </div>
 
@@ -288,6 +268,7 @@ import {
 import type { AnchorPosition, BoardObject } from '../types';
 import CodeMirrorEditor from './CodeMirrorEditor.vue';
 import { getIconComponent } from '../utils/iconRegistry';
+import { renderMarkdown, toggleChecklistItem } from '../utils/markdown';
 
 const props = defineProps<{
   object: BoardObject;
@@ -371,31 +352,40 @@ const resolvedIconComponent = computed(() => {
   return getIconComponent(iconId);
 });
 
-// Parse note lines for checklist items and tags
-interface ParsedLine {
-  text: string;
-  isCheckbox: boolean;
-  checked: boolean;
-  isTagLine: boolean;
-}
-
-const parsedLines = computed<ParsedLine[]>(() => {
-  if (!props.object.content) return [];
-  const lines = props.object.content.split('\n');
-  return lines.map((line) => {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('- [ ]')) {
-      return { text: trimmed.slice(5).trim(), isCheckbox: true, checked: false, isTagLine: false };
-    }
-    if (trimmed.startsWith('- [x]') || trimmed.startsWith('- [X]')) {
-      return { text: trimmed.slice(5).trim(), isCheckbox: true, checked: true, isTagLine: false };
-    }
-    if (trimmed.startsWith('#') && !trimmed.startsWith('##') && trimmed.includes('#')) {
-      return { text: trimmed, isCheckbox: false, checked: false, isTagLine: true };
-    }
-    return { text: line, isCheckbox: false, checked: false, isTagLine: false };
-  });
+// Rendered Markdown document for View Mode
+const renderedMarkdown = computed(() => {
+  return renderMarkdown(props.object.content || '');
 });
+
+function onMarkdownClick(e: MouseEvent) {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+
+  // Handle task checklist toggling
+  const checkbox = target.closest('.task-checkbox') as HTMLInputElement | null;
+  const label = target.closest('.task-checkbox-label') as HTMLElement | null;
+
+  if (checkbox || label) {
+    e.stopPropagation();
+    const taskIndexStr = checkbox?.getAttribute('data-task-index') || label?.getAttribute('data-task-index');
+    if (taskIndexStr !== null && taskIndexStr !== undefined) {
+      const taskIndex = parseInt(taskIndexStr, 10);
+      if (!isNaN(taskIndex)) {
+        const updated = toggleChecklistItem(props.object.content || '', taskIndex);
+        emit('update-content', props.object.id, updated);
+        emit('save-request');
+      }
+    }
+    return;
+  }
+
+  // Handle link clicks without triggering drag
+  const link = target.closest('a') as HTMLAnchorElement | null;
+  if (link && link.href) {
+    e.stopPropagation();
+    return;
+  }
+}
 
 const computedTags = computed<string[]>(() => {
   if (props.object.meta?.tags && Array.isArray(props.object.meta.tags)) {
@@ -407,19 +397,6 @@ const computedTags = computed<string[]>(() => {
   }
   return [];
 });
-
-function toggleCheckbox(lineIndex: number) {
-  const lines = props.object.content.split('\n');
-  if (lines[lineIndex]) {
-    const trimmed = lines[lineIndex].trim();
-    if (trimmed.startsWith('- [ ]')) {
-      lines[lineIndex] = lines[lineIndex].replace('- [ ]', '- [x]');
-    } else if (trimmed.startsWith('- [x]') || trimmed.startsWith('- [X]')) {
-      lines[lineIndex] = lines[lineIndex].replace(/- \[[xX]\]/, '- [ ]');
-    }
-    emit('update-content', props.object.id, lines.join('\n'));
-  }
-}
 
 // Image Renaming
 const isEditingImageTitle = ref(false);
@@ -837,52 +814,327 @@ function onContentChange(newContent: string) {
 }
 
 .note-content-preview {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: #cbd5e1;
 }
 
 .empty-note-hint {
   color: #64748b;
   font-style: italic;
-  font-size: 12px;
+  font-size: 12.5px;
   padding: 8px 0;
+  user-select: none;
 }
 
-.note-line {
+/* Markdown Rendered Document Styling */
+.markdown-rendered {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #cbd5e1;
+  word-break: break-word;
+}
+
+.markdown-rendered :deep(h1) {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 12px 0 6px;
+  border-bottom: 1px solid #282a42;
+  padding-bottom: 4px;
+}
+
+.markdown-rendered :deep(h1:first-child),
+.markdown-rendered :deep(h2:first-child),
+.markdown-rendered :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.markdown-rendered :deep(h2) {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin: 10px 0 5px;
+}
+
+.markdown-rendered :deep(h3) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 8px 0 4px;
+}
+
+.markdown-rendered :deep(h4),
+.markdown-rendered :deep(h5),
+.markdown-rendered :deep(h6) {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin: 6px 0 3px;
+}
+
+.markdown-rendered :deep(p) {
+  margin: 0 0 8px;
+}
+
+.markdown-rendered :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-rendered :deep(strong),
+.markdown-rendered :deep(b) {
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.markdown-rendered :deep(em),
+.markdown-rendered :deep(i) {
+  color: #e2e8f0;
+  font-style: italic;
+}
+
+.markdown-rendered :deep(del),
+.markdown-rendered :deep(s),
+.markdown-rendered :deep(strike) {
+  text-decoration: line-through;
+  color: #64748b;
+}
+
+.markdown-rendered :deep(ul),
+.markdown-rendered :deep(ol) {
+  margin: 0 0 8px 0;
+  padding-left: 20px;
+}
+
+.markdown-rendered :deep(li) {
+  margin-bottom: 3px;
+}
+
+.markdown-rendered :deep(ul ul),
+.markdown-rendered :deep(ol ol),
+.markdown-rendered :deep(ul ol),
+.markdown-rendered :deep(ol ul) {
+  margin: 2px 0 2px;
+  padding-left: 18px;
+}
+
+/* Checklists */
+.markdown-rendered :deep(.task-list-item) {
+  list-style-type: none;
+  margin-left: -20px;
+  margin-bottom: 4px;
+}
+
+.markdown-rendered :deep(.task-checkbox-label) {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.checkbox-box {
+.markdown-rendered :deep(.task-checkbox) {
+  appearance: none;
+  -webkit-appearance: none;
   width: 14px;
   height: 14px;
   border: 1px solid #475569;
   border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 2px;
-  cursor: pointer;
   background: #0f101d;
+  cursor: pointer;
   flex-shrink: 0;
+  margin-top: 2px;
+  position: relative;
+  transition: all 0.12s ease;
 }
-.checkbox-box.is-checked {
+
+.markdown-rendered :deep(.task-checkbox:hover) {
+  border-color: #a855f7;
+}
+
+.markdown-rendered :deep(.task-checkbox:checked) {
   background: #9333ea;
   border-color: #a855f7;
 }
 
-.check-mark {
-  color: #ffffff;
+.markdown-rendered :deep(.task-checkbox:checked::after) {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
-.checkbox-text.is-strike {
+.markdown-rendered :deep(.task-text.is-done) {
   text-decoration: line-through;
   color: #64748b;
+}
+
+/* Blockquotes */
+.markdown-rendered :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid #a855f7;
+  background: rgba(168, 85, 247, 0.06);
+  border-radius: 0 6px 6px 0;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* Code & Pre */
+.markdown-rendered :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  background: #0d0e19;
+  border: 1px solid #23253b;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #e2e8f0;
+}
+
+.markdown-rendered :deep(pre) {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: #0c0d18;
+  border: 1px solid #22243a;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.markdown-rendered :deep(pre code) {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #c084fc;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Tables */
+.markdown-rendered :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 11.5px;
+}
+
+.markdown-rendered :deep(th),
+.markdown-rendered :deep(td) {
+  padding: 5px 8px;
+  border: 1px solid #282a42;
+  text-align: left;
+}
+
+.markdown-rendered :deep(th) {
+  background: #1e2035;
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+.markdown-rendered :deep(tr:nth-child(even)) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Horizontal Rule */
+.markdown-rendered :deep(hr) {
+  border: none;
+  border-top: 1px solid #282a42;
+  margin: 10px 0;
+}
+
+/* Links */
+.markdown-rendered :deep(a) {
+  color: #c084fc;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(192, 132, 252, 0.4);
+  transition: all 0.12s;
+}
+
+.markdown-rendered :deep(a:hover) {
+  color: #d8b4fe;
+  border-bottom-style: solid;
+}
+
+/* Inline Calculator Widget */
+.markdown-rendered :deep(.calc-widget) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 3px 8px;
+  background: #0f101d;
+  border: 1px solid #282a44;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  cursor: default;
+  transition: all 0.15s ease;
+}
+
+.markdown-rendered :deep(.calc-widget:hover) {
+  border-color: #a855f7;
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.3);
+}
+
+.markdown-rendered :deep(.calc-pill) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markdown-rendered :deep(.calc-badge) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+  border-radius: 4px;
+}
+
+.markdown-rendered :deep(.calc-result) {
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #4ade80;
+}
+
+.markdown-rendered :deep(.calc-formula) {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #64748b;
+  margin-left: 2px;
+  opacity: 0.85;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.markdown-rendered :deep(.calc-widget:hover .calc-formula) {
+  opacity: 1;
+  color: #94a3b8;
+}
+
+/* Calculator Error State */
+.markdown-rendered :deep(.calc-widget.is-error) {
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.markdown-rendered :deep(.calc-pill.is-error .calc-badge) {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.markdown-rendered :deep(.calc-error) {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f87171;
 }
 
 .note-footer {
