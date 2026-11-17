@@ -219,7 +219,7 @@ function redo() {
 
 // --- STYLES ---
 const worldTransformStyle = computed(() => ({
-  transform: `translate3d(${camera.panX}px, ${camera.panY}px, 0) scale(${camera.zoom})`,
+  transform: `translate(${camera.panX}px, ${camera.panY}px) scale(${camera.zoom})`,
   transformOrigin: '0 0',
 }));
 
@@ -283,6 +283,14 @@ onMounted(async () => {
     objects.value = data.objects || [];
   }
 
+  // Intercept middle-click and panning events in capture phase so middle-click
+  // pans everywhere (even over notes, images, or editors) without triggering PRIMARY paste
+  window.addEventListener('mousedown', onGlobalMouseDownCapture, { capture: true });
+  window.addEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
+  window.addEventListener('mousemove', onGlobalMouseMoveCapture, { capture: true });
+  window.addEventListener('mouseup', onGlobalMouseUpCapture, { capture: true });
+  window.addEventListener('blur', onWindowBlur);
+
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('paste', onGlobalPaste);
@@ -294,60 +302,122 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('mousedown', onGlobalMouseDownCapture, { capture: true });
+  window.removeEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
+  window.removeEventListener('mousemove', onGlobalMouseMoveCapture, { capture: true });
+  window.removeEventListener('mouseup', onGlobalMouseUpCapture, { capture: true });
+  window.removeEventListener('blur', onWindowBlur);
+
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
   window.removeEventListener('paste', onGlobalPaste);
 });
 
-// --- VIEWPORT MOUSE HANDLERS ---
-function onViewportMouseDown(e: MouseEvent) {
-  // Middle click (button 1) or Space+LeftClick initiates pan
-  if (e.button === 1 || (e.button === 0 && isSpaceDown.value)) {
+// --- GLOBAL CAPTURE HANDLERS FOR PANNING & MIDDLE-CLICK ---
+function onGlobalMouseDownCapture(e: MouseEvent) {
+  // 1. Middle mouse button anywhere -> start panning
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
     isPanning.value = true;
     panStart.x = e.clientX;
     panStart.y = e.clientY;
     panStart.initialPanX = camera.panX;
     panStart.initialPanY = camera.panY;
-    e.preventDefault();
     return;
   }
 
-  // Left click on empty canvas
-  if (e.button === 0) {
-    // If we were editing, exit editing
-    if (editingId.value) {
-      exitEditing();
-    }
+  // 2. Space + Left click anywhere -> start panning
+  if (e.button === 0 && isSpaceDown.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
 
-    // Deselect unless Shift is pressed
-    if (!e.shiftKey && !e.ctrlKey) {
-      selectedIds.value.clear();
-    }
-
-    // Start marquee selection box
-    selectionBox.value = {
-      startX: e.clientX,
-      startY: e.clientY,
-      currentX: e.clientX,
-      currentY: e.clientY,
-    };
+    isPanning.value = true;
+    panStart.x = e.clientX;
+    panStart.y = e.clientY;
+    panStart.initialPanX = camera.panX;
+    panStart.initialPanY = camera.panY;
+    return;
   }
 }
 
-function onMouseMove(e: MouseEvent) {
+function onGlobalAuxClickCapture(e: MouseEvent) {
+  // Prevent default middle-click actions (such as PRIMARY paste or autoscroll)
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  }
+}
+
+function onGlobalMouseMoveCapture(e: MouseEvent) {
   mouseScreen.x = e.clientX;
   mouseScreen.y = e.clientY;
 
-  // 1. Panning
   if (isPanning.value) {
+    e.preventDefault();
+    e.stopPropagation();
     const dx = e.clientX - panStart.x;
     const dy = e.clientY - panStart.y;
     camera.panX = panStart.initialPanX + dx;
     camera.panY = panStart.initialPanY + dy;
     return;
   }
+}
 
-  // 2. Marquee Selection
+function onGlobalMouseUpCapture(e: MouseEvent) {
+  if (isPanning.value && (e.button === 1 || e.button === 0)) {
+    isPanning.value = false;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    triggerSave();
+  }
+}
+
+function onWindowBlur() {
+  isSpaceDown.value = false;
+  if (isPanning.value) {
+    isPanning.value = false;
+    triggerSave();
+  }
+}
+
+// --- VIEWPORT MOUSE HANDLERS (Left click only) ---
+function onViewportMouseDown(e: MouseEvent) {
+  // Only handle left-click on empty canvas
+  if (e.button !== 0 || isSpaceDown.value) return;
+
+  // If we were editing, exit editing
+  if (editingId.value) {
+    exitEditing();
+  }
+
+  // Deselect unless Shift or Ctrl is pressed
+  if (!e.shiftKey && !e.ctrlKey) {
+    selectedIds.value.clear();
+  }
+
+  // Start marquee selection box
+  selectionBox.value = {
+    startX: e.clientX,
+    startY: e.clientY,
+    currentX: e.clientX,
+    currentY: e.clientY,
+  };
+}
+
+function onMouseMove(e: MouseEvent) {
+  mouseScreen.x = e.clientX;
+  mouseScreen.y = e.clientY;
+
+  // If panning via global capture, skip normal object drag/marquee
+  if (isPanning.value) return;
+
+  // 1. Marquee Selection
   if (selectionBox.value) {
     selectionBox.value.currentX = e.clientX;
     selectionBox.value.currentY = e.clientY;
@@ -446,11 +516,6 @@ function onMouseMove(e: MouseEvent) {
 }
 
 function onMouseUp() {
-  if (isPanning.value) {
-    isPanning.value = false;
-    triggerSave();
-  }
-
   if (selectionBox.value) {
     selectionBox.value = null;
   }
@@ -1052,6 +1117,10 @@ function triggerSave() {
   width: 100%;
   height: 100%;
   pointer-events: auto;
+  transform-style: flat;
+  backface-visibility: visible;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Flash Highlight when jumping to object from search */

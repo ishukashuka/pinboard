@@ -9,11 +9,11 @@
       'kind-url': object.kind === 'url',
     }"
     :style="objectStyle"
-    @mousedown.stop="onMouseDown"
-    @dblclick.stop="onDoubleClick"
+    @mousedown="onMouseDown"
+    @dblclick="onDoubleClick"
   >
     <!-- Object Header / Label Bar (only visible when named, hovered or selected) -->
-    <div v-if="object.title || isSelected" class="object-header" @mousedown.stop="onHeaderMouseDown">
+    <div v-if="object.title || isSelected" class="object-header" @mousedown="onHeaderMouseDown">
       <div v-if="editingTitle" class="title-edit-wrap" @mousedown.stop>
         <input
           ref="titleInputRef"
@@ -105,7 +105,7 @@
         v-for="handle in handles"
         :key="handle"
         :class="['resize-handle', `handle-${handle}`]"
-        @mousedown.stop="onHandleMouseDown(handle, $event)"
+        @mousedown="onHandleMouseDown(handle, $event)"
       ></div>
     </template>
   </div>
@@ -143,13 +143,17 @@ const titleDraft = ref('');
 const titleInputRef = ref<HTMLInputElement | null>(null);
 
 const objectStyle = computed(() => ({
-  transform: `translate3d(${props.object.x}px, ${props.object.y}px, 0)`,
+  transform: `translate(${props.object.x}px, ${props.object.y}px)`,
   width: `${props.object.width}px`,
   height: `${props.object.height}px`,
   zIndex: props.object.z_index,
 }));
 
 function onMouseDown(e: MouseEvent) {
+  // Middle click (button 1) must be left alone to bubble to canvas panning!
+  if (e.button !== 0) return;
+  e.stopPropagation();
+
   if (props.isEditing) return;
   const isMulti = e.shiftKey || e.ctrlKey || e.metaKey;
   emit('select', props.object.id, isMulti);
@@ -157,10 +161,12 @@ function onMouseDown(e: MouseEvent) {
 }
 
 function onHeaderMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return;
   onMouseDown(e);
 }
 
-function onDoubleClick() {
+function onDoubleClick(e: MouseEvent) {
+  if (e.button !== 0) return;
   if (props.object.kind === 'text') {
     emit('start-editing', props.object.id);
   } else if (props.object.kind === 'image') {
@@ -171,6 +177,8 @@ function onDoubleClick() {
 }
 
 function onHandleMouseDown(handle: string, e: MouseEvent) {
+  if (e.button !== 0) return;
+  e.stopPropagation();
   emit('start-resize', props.object.id, handle, e);
 }
 
@@ -222,6 +230,8 @@ function openUrl() {
   box-sizing: border-box;
   transition: box-shadow 0.15s ease, border-color 0.15s ease;
   overflow: visible;
+  transform-style: flat;
+  backface-visibility: visible;
 }
 
 .board-object:hover {

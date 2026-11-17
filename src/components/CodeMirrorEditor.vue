@@ -1,5 +1,10 @@
 <template>
-  <div class="cm-editor-container" :class="{ 'font-sans': fontFamily === 'sans', 'font-mono': fontFamily !== 'sans' }" @keydown.stop>
+  <div
+    class="cm-editor-container"
+    :class="{ 'font-sans': fontFamily === 'sans', 'font-mono': fontFamily !== 'sans' }"
+    @keydown.stop
+    @auxclick="onAuxClick"
+  >
     <div ref="editorHost" class="cm-host"></div>
     <div class="vim-status-bar">
       <span class="vim-mode-badge" :class="vimModeClass">{{ currentModeText }}</span>
@@ -145,6 +150,17 @@ onMounted(() => {
       }
     });
 
+    // Block middle-click inside CodeMirror from triggering X11/Wayland PRIMARY paste
+    editorHost.value.addEventListener(
+      'mousedown',
+      (e: MouseEvent) => {
+        if (e.button === 1) {
+          e.preventDefault();
+        }
+      },
+      { capture: true }
+    );
+
     // Custom Escape handler:
     // If user presses Escape while ALREADY in normal mode, exit editor back to canvas mode!
     editorHost.value.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -165,6 +181,13 @@ onMounted(() => {
     view.focus();
   }
 });
+
+function onAuxClick(e: MouseEvent) {
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
 
 watch(
   () => props.modelValue,
