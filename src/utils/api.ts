@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { BoardData, BoardObject } from '../types';
+import type { BoardConnector, BoardData, BoardInfo, BoardObject } from '../types';
 
 export interface ClipboardPayload {
   kind: 'text' | 'image' | 'empty';
@@ -16,7 +16,6 @@ export const api = {
       return await invoke<ClipboardPayload>('get_clipboard');
     } catch (err) {
       console.warn('Tauri get_clipboard failed, falling back to navigator.clipboard:', err);
-      // Fallback for browser mode
       if (navigator.clipboard && navigator.clipboard.readText) {
         try {
           const text = await navigator.clipboard.readText();
@@ -62,17 +61,21 @@ export const api = {
       return await invoke<BoardData>('load_board', { boardId });
     } catch (err) {
       console.warn('Tauri load_board failed, using local fallback:', err);
-      const saved = localStorage.getItem('pinboard_fallback_board');
+      const saved = localStorage.getItem(`pinboard_${boardId || 'default'}`);
       if (saved) {
         return JSON.parse(saved);
       }
       return {
-        id: 'default',
-        name: 'Main Board',
-        pan_x: 0,
-        pan_y: 0,
-        zoom: 1,
+        board: {
+          id: boardId || 'default',
+          name: 'Untitled Board',
+          pan_x: 0,
+          pan_y: 0,
+          zoom: 1,
+          updated_at: Date.now(),
+        },
         objects: [],
+        connectors: [],
       };
     }
   },
@@ -82,7 +85,8 @@ export const api = {
     panX: number,
     panY: number,
     zoom: number,
-    objects: BoardObject[]
+    objects: BoardObject[],
+    connectors: BoardConnector[]
   ): Promise<void> {
     try {
       await invoke('save_board', {
@@ -91,13 +95,60 @@ export const api = {
         panY,
         zoom,
         objects,
+        connectors,
       });
     } catch (err) {
       console.warn('Tauri save_board failed, saving to localStorage:', err);
       localStorage.setItem(
-        'pinboard_fallback_board',
-        JSON.stringify({ id: boardId, name: 'Main Board', pan_x: panX, pan_y: panY, zoom, objects })
+        `pinboard_${boardId}`,
+        JSON.stringify({
+          board: { id: boardId, name: 'Untitled Board', pan_x: panX, pan_y: panY, zoom, updated_at: Date.now() },
+          objects,
+          connectors,
+        })
       );
+    }
+  },
+
+  async getBoards(): Promise<BoardInfo[]> {
+    try {
+      return await invoke<BoardInfo[]>('get_boards');
+    } catch (err) {
+      console.warn('Tauri get_boards failed:', err);
+      return [
+        {
+          id: 'default',
+          name: 'Untitled Board',
+          pan_x: 0,
+          pan_y: 0,
+          zoom: 1,
+          updated_at: Date.now(),
+        },
+      ];
+    }
+  },
+
+  async createBoard(name: string): Promise<BoardInfo> {
+    try {
+      return await invoke<BoardInfo>('create_board', { name });
+    } catch (err) {
+      console.warn('Tauri create_board failed:', err);
+      return {
+        id: crypto.randomUUID(),
+        name,
+        pan_x: 0,
+        pan_y: 0,
+        zoom: 1,
+        updated_at: Date.now(),
+      };
+    }
+  },
+
+  async renameBoard(id: string, name: string): Promise<void> {
+    try {
+      await invoke('rename_board', { id, name });
+    } catch (err) {
+      console.warn('Tauri rename_board failed:', err);
     }
   },
 

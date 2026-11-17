@@ -19,7 +19,7 @@ pub struct BoardObject {
     pub id: String,
     #[serde(default = "default_board_id")]
     pub board_id: String,
-    pub kind: String, // "text" | "image" | "url"
+    pub kind: String, // "text" | "image" | "url" | "code" | "diagram_node"
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -27,7 +27,31 @@ pub struct BoardObject {
     pub z_index: i32,
     pub title: Option<String>,
     pub content: String,
-    pub meta: Option<String>, // JSON string
+    pub meta: Option<serde_json::Value>,
+    pub created_at: Option<i64>,
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BoardConnector {
+    pub id: String,
+    #[serde(default = "default_board_id")]
+    pub board_id: String,
+    pub from_id: Option<String>,
+    pub from_anchor: Option<String>, // "top" | "right" | "bottom" | "left" | "center"
+    pub from_x: f64,
+    pub from_y: f64,
+    pub to_id: Option<String>,
+    pub to_anchor: Option<String>,
+    pub to_x: f64,
+    pub to_y: f64,
+    pub line_type: String, // "curved" | "orthogonal" | "straight"
+    pub arrow_start: String, // "none" | "arrow"
+    pub arrow_end: String, // "none" | "arrow"
+    pub stroke_style: String, // "solid" | "dashed" | "dotted"
+    pub color: String,
+    pub stroke_width: f64,
+    pub label: Option<String>,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
 }
@@ -46,4 +70,5 @@ pub struct ClipboardResult {
 pub struct BoardData {
     pub board: Board,
     pub objects: Vec<BoardObject>,
+    pub connectors: Vec<BoardConnector>,
 }

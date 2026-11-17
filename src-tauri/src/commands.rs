@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use tauri::{AppHandle, State, Manager};
 use crate::clipboard::ClipboardManager;
-use crate::models::{BoardData, BoardObject, ClipboardResult};
+use crate::models::{Board, BoardConnector, BoardData, BoardObject, ClipboardResult};
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -41,8 +41,8 @@ pub fn save_image_from_bytes(
 pub fn load_board(board_id: Option<String>, state: State<'_, AppState>) -> Result<BoardData, String> {
     let target_id = board_id.unwrap_or_else(|| "default".to_string());
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let (board, objects) = crate::db::load_board(&db, &target_id).map_err(|e| e.to_string())?;
-    Ok(BoardData { board, objects })
+    let (board, objects, connectors) = crate::db::load_board(&db, &target_id).map_err(|e| e.to_string())?;
+    Ok(BoardData { board, objects, connectors })
 }
 
 #[tauri::command]
@@ -52,16 +52,35 @@ pub fn save_board(
     pan_y: f64,
     zoom: f64,
     objects: Vec<BoardObject>,
+    connectors: Vec<BoardConnector>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::db::save_board_state(&mut db, &board_id, pan_x, pan_y, zoom, &objects).map_err(|e| e.to_string())
+    crate::db::save_board_state(&mut db, &board_id, pan_x, pan_y, zoom, &objects, &connectors).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_objects(ids: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     crate::db::delete_objects(&db, &ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_boards(state: State<'_, AppState>) -> Result<Vec<Board>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::db::get_boards(&db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_board(name: String, state: State<'_, AppState>) -> Result<Board, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::db::create_board(&db, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_board(id: String, name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    crate::db::rename_board(&db, &id, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -35,6 +35,9 @@ pub fn run() {
             commands::load_board,
             commands::save_board,
             commands::delete_objects,
+            commands::get_boards,
+            commands::create_board,
+            commands::rename_board,
             commands::set_always_on_top,
         ])
         .run(tauri::generate_context!())
