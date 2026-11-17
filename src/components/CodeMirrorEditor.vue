@@ -151,15 +151,18 @@ onMounted(() => {
     });
 
     // Block middle-click inside CodeMirror from triggering X11/Wayland PRIMARY paste
-    editorHost.value.addEventListener(
-      'mousedown',
-      (e: MouseEvent) => {
-        if (e.button === 1) {
-          e.preventDefault();
-        }
-      },
-      { capture: true }
-    );
+    const blockMiddleClick = (e: MouseEvent) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    };
+    editorHost.value.addEventListener('mousedown', blockMiddleClick, { capture: true });
+    editorHost.value.addEventListener('mouseup', blockMiddleClick, { capture: true });
+    editorHost.value.addEventListener('auxclick', blockMiddleClick, { capture: true });
+    editorHost.value.addEventListener('pointerdown', blockMiddleClick, { capture: true });
+    editorHost.value.addEventListener('pointerup', blockMiddleClick, { capture: true });
 
     // Custom Escape handler:
     // If user presses Escape while ALREADY in normal mode, exit editor back to canvas mode!
@@ -186,6 +189,7 @@ function onAuxClick(e: MouseEvent) {
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
+    e.stopImmediatePropagation();
   }
 }
 

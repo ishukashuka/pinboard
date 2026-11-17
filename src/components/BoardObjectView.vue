@@ -4,6 +4,7 @@
     :class="{
       'is-selected': isSelected,
       'is-editing': isEditing,
+      'connector-mode': isConnectorTool,
       'kind-image': object.kind === 'image',
       'kind-text': object.kind === 'text',
       'kind-code': isCodeSnippet,
@@ -103,7 +104,7 @@
           <div class="note-header-left">
             <BookOpen :size="14" class="note-icon" />
             <span class="note-title" @dblclick.stop="startEditTitle">
-              {{ object.title || 'Ideas for Mind Studio' }}
+              {{ object.title || 'Note' }}
             </span>
           </div>
           <button
@@ -127,6 +128,9 @@
             />
           </div>
           <div v-else class="note-content-preview">
+            <div v-if="parsedLines.length === 0" class="empty-note-hint">
+              Empty note. Double-click or press Enter to edit...
+            </div>
             <!-- Formatted Markdown Checkboxes & Content -->
             <div
               v-for="(line, idx) in parsedLines"
@@ -302,7 +306,7 @@ const objectStyle = computed(() => ({
   transform: `translate(${props.object.x}px, ${props.object.y}px)`,
   width: `${props.object.width}px`,
   height: `${props.object.height}px`,
-  zIndex: props.object.z_index,
+  zIndex: props.isSelected ? 500 + props.object.z_index : 10 + props.object.z_index,
 }));
 
 // Check if this text object represents a code snippet
@@ -510,6 +514,7 @@ function onMouseDown(e: MouseEvent) {
     return;
   }
   if (e.button === 0) {
+    e.stopPropagation();
     emit('select', props.object.id, e.shiftKey);
     emit('start-drag', props.object.id, e);
   }
@@ -559,6 +564,14 @@ function onContentChange(newContent: string) {
   backface-visibility: visible;
   overflow: visible;
   cursor: move;
+}
+
+.board-object.connector-mode {
+  cursor: crosshair;
+}
+
+.board-object.is-editing {
+  cursor: auto;
 }
 
 /* Selected state across all objects */
@@ -759,6 +772,13 @@ function onContentChange(newContent: string) {
   font-size: 12.5px;
   line-height: 1.5;
   color: #cbd5e1;
+}
+
+.empty-note-hint {
+  color: #64748b;
+  font-style: italic;
+  font-size: 12px;
+  padding: 8px 0;
 }
 
 .note-line {

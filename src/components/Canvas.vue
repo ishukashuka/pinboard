@@ -1,5 +1,11 @@
 <template>
-  <div class="pinboard-workspace" :class="{ 'tool-hand': activeTool === 'hand' || isSpaceDown }">
+  <div
+    class="pinboard-workspace"
+    :class="{
+      'is-panning': isPanning,
+      'tool-hand': activeTool === 'hand' || isSpaceDown,
+    }"
+  >
     <!-- 1. TOP APPLICATION BAR -->
     <TopBar
       :current-board-id="currentBoardId"
@@ -227,6 +233,7 @@ const marqueeCurrent = ref<{ x: number; y: number } | null>(null);
 
 // Dragging and Resizing State
 const isDraggingObjects = ref(false);
+const objectDragHasMoved = ref(false);
 const dragStartPos = ref<{ x: number; y: number } | null>(null);
 const dragObjectOffsets = ref<Map<string, { x: number; y: number }>>(new Map());
 
@@ -372,9 +379,12 @@ const selectionBox = computed(() => {
 
 const selectionBoxStyle = computed(() => {
   if (!selectionBox.value) return {};
+  const rect = canvasViewportRef.value?.getBoundingClientRect();
+  const left = rect ? rect.left : 0;
+  const top = rect ? rect.top : 48;
   return {
-    left: `${selectionBox.value.x}px`,
-    top: `${selectionBox.value.y}px`,
+    left: `${selectionBox.value.x - left}px`,
+    top: `${selectionBox.value.y - top}px`,
     width: `${selectionBox.value.width}px`,
     height: `${selectionBox.value.height}px`,
   };
@@ -444,16 +454,22 @@ const selectedConnectorScreenPos = computed(() => {
 
 // --- COORDINATE CONVERSION ---
 function screenToWorld(sx: number, sy: number): { x: number; y: number } {
+  const rect = canvasViewportRef.value?.getBoundingClientRect();
+  const left = rect ? rect.left : 0;
+  const top = rect ? rect.top : 48;
   return {
-    x: (sx - camera.panX) / camera.zoom,
-    y: (sy - camera.panY) / camera.zoom,
+    x: (sx - left - camera.panX) / camera.zoom,
+    y: (sy - top - camera.panY) / camera.zoom,
   };
 }
 
 function worldToScreen(wx: number, wy: number): { x: number; y: number } {
+  const rect = canvasViewportRef.value?.getBoundingClientRect();
+  const left = rect ? rect.left : 0;
+  const top = rect ? rect.top : 48;
   return {
-    x: wx * camera.zoom + camera.panX,
-    y: wy * camera.zoom + camera.panY,
+    x: wx * camera.zoom + camera.panX + left,
+    y: wy * camera.zoom + camera.panY + top,
   };
 }
 
@@ -509,11 +525,13 @@ function showToast(msg: string) {
 onMounted(async () => {
   await loadBoardData(currentBoardId.value);
 
-  // Global capture interception for middle-mouse panning
+  // Global capture interception for middle-mouse panning and preventing Linux PRIMARY selection paste
   window.addEventListener('mousedown', onGlobalMouseDownCapture, { capture: true });
   window.addEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
   window.addEventListener('mousemove', onGlobalMouseMoveCapture, { capture: true });
   window.addEventListener('mouseup', onGlobalMouseUpCapture, { capture: true });
+  window.addEventListener('pointerdown', onGlobalPointerDownCapture, { capture: true });
+  window.addEventListener('pointerup', onGlobalPointerUpCapture, { capture: true });
   window.addEventListener('blur', onWindowBlur);
 
   window.addEventListener('keydown', onKeyDown);
@@ -530,6 +548,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
   window.removeEventListener('mousemove', onGlobalMouseMoveCapture, { capture: true });
   window.removeEventListener('mouseup', onGlobalMouseUpCapture, { capture: true });
+  window.removeEventListener('pointerdown', onGlobalPointerDownCapture, { capture: true });
+  window.removeEventListener('pointerup', onGlobalPointerUpCapture, { capture: true });
   window.removeEventListener('blur', onWindowBlur);
 
   window.removeEventListener('keydown', onKeyDown);
@@ -552,7 +572,6 @@ async function loadBoardData(id: string) {
     if (objects.value.some((o) => o.id === 'sample-img-mountain')) {
       selectedIds.value = new Set(['sample-img-mountain']);
       selectedConnectorId.value = 'conn-olt-onu1';
-      activeTool.value = 'connector';
     }
   }
 }
@@ -581,6 +600,16 @@ function onGlobalMouseDownCapture(e: MouseEvent) {
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
+    e.stopImmediatePropagation();
+    startPanning(e.clientX, e.clientY);
+  }
+}
+
+function onGlobalPointerDownCapture(e: PointerEvent) {
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
     startPanning(e.clientX, e.clientY);
   }
 }
@@ -589,6 +618,7 @@ function onGlobalAuxClickCapture(e: MouseEvent) {
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
+    e.stopImmediatePropagation();
   }
 }
 
@@ -605,8 +635,24 @@ function onGlobalMouseMoveCapture(e: MouseEvent) {
 }
 
 function onGlobalMouseUpCapture(e: MouseEvent) {
-  if (e.button === 1 && isPanning.value) {
-    stopPanning();
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (isPanning.value) {
+      stopPanning();
+    }
+  }
+}
+
+function onGlobalPointerUpCapture(e: PointerEvent) {
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (isPanning.value) {
+      stopPanning();
+    }
   }
 }
 
@@ -614,6 +660,7 @@ function onWindowBlur() {
   if (isPanning.value) stopPanning();
   isSpaceDown.value = false;
   isDraggingObjects.value = false;
+  objectDragHasMoved.value = false;
   resizeState.value = null;
   connectingState.value = null;
   endpointDragState.value = null;
@@ -623,6 +670,7 @@ function onWindowBlur() {
 
 // --- PANNING HELPERS ---
 function startPanning(clientX: number, clientY: number) {
+  if (isPanning.value) return;
   isPanning.value = true;
   panStart.value = { x: clientX, y: clientY };
   panCameraStart.value = { x: camera.panX, y: camera.panY };
@@ -743,6 +791,17 @@ function restorePreviousCamera() {
 // --- VIEWPORT MOUSE INTERACTIONS ---
 function onViewportMouseDown(e: MouseEvent) {
   if (e.button === 1) return; // Handled globally for pan
+
+  // Ignore if clicking on a board object or interactive overlay element
+  const target = e.target as HTMLElement | null;
+  if (
+    target?.closest('.board-object') ||
+    target?.closest('.connector-toolbar') ||
+    target?.closest('.bottom-hud') ||
+    target?.closest('.endpoint-hit')
+  ) {
+    return;
+  }
 
   // Hand tool: Left drag pans
   if (activeTool.value === 'hand' || isSpaceDown.value) {
@@ -884,15 +943,23 @@ function onMouseMove(e: MouseEvent) {
 
   // 4. Dragging Selected Objects
   if (isDraggingObjects.value && dragStartPos.value) {
-    const dx = (e.clientX - dragStartPos.value.x) / camera.zoom;
-    const dy = (e.clientY - dragStartPos.value.y) / camera.zoom;
+    const dist = Math.hypot(e.clientX - dragStartPos.value.x, e.clientY - dragStartPos.value.y);
+    if (!objectDragHasMoved.value && dist > 2) {
+      pushUndo();
+      objectDragHasMoved.value = true;
+    }
 
-    for (const obj of objects.value) {
-      if (selectedIds.value.has(obj.id)) {
-        const init = dragObjectOffsets.value.get(obj.id);
-        if (init) {
-          obj.x = Math.round(init.x + dx);
-          obj.y = Math.round(init.y + dy);
+    if (objectDragHasMoved.value) {
+      const dx = (e.clientX - dragStartPos.value.x) / camera.zoom;
+      const dy = (e.clientY - dragStartPos.value.y) / camera.zoom;
+
+      for (const obj of objects.value) {
+        if (selectedIds.value.has(obj.id)) {
+          const init = dragObjectOffsets.value.get(obj.id);
+          if (init) {
+            obj.x = Math.round(init.x + dx);
+            obj.y = Math.round(init.y + dy);
+          }
         }
       }
     }
@@ -980,10 +1047,32 @@ function onMouseUp(e: MouseEvent) {
 
   // 3. Finish Object Dragging
   if (isDraggingObjects.value) {
+    if (objectDragHasMoved.value) {
+      // Sync connector coordinates for connected objects
+      for (const c of connectors.value) {
+        if (c.from_id) {
+          const o = objects.value.find((obj) => obj.id === c.from_id);
+          if (o) {
+            const p = getObjectAnchorPoint(o, c.from_anchor as AnchorPosition);
+            c.from_x = p.x;
+            c.from_y = p.y;
+          }
+        }
+        if (c.to_id) {
+          const o = objects.value.find((obj) => obj.id === c.to_id);
+          if (o) {
+            const p = getObjectAnchorPoint(o, c.to_anchor as AnchorPosition);
+            c.to_x = p.x;
+            c.to_y = p.y;
+          }
+        }
+      }
+      triggerSave();
+    }
     isDraggingObjects.value = false;
+    objectDragHasMoved.value = false;
     dragStartPos.value = null;
     dragObjectOffsets.value.clear();
-    triggerSave();
   }
 
   // 4. Finish Resizing
@@ -1022,13 +1111,12 @@ function onObjectSelect(id: string, multi: boolean) {
 function onStartObjectDrag(id: string, e: MouseEvent) {
   if (activeTool.value === 'hand' || isSpaceDown.value || activeTool.value === 'connector') return;
 
-  pushUndo();
-
   if (!selectedIds.value.has(id)) {
     selectedIds.value = new Set([id]);
   }
 
   isDraggingObjects.value = true;
+  objectDragHasMoved.value = false;
   dragStartPos.value = { x: e.clientX, y: e.clientY };
   dragObjectOffsets.value.clear();
 
@@ -1260,16 +1348,16 @@ function spawnTextNote(worldX?: number, worldY?: number) {
     width: 320,
     height: 220,
     z_index: getNextZIndex(),
-    title: 'New Note',
-    content: '- [ ] Item 1\n- [ ] Item 2',
-    meta: { tags: ['#todo'] },
+    title: 'Note',
+    content: '',
+    meta: {},
   };
   pushUndo();
   objects.value.push(newObj);
   selectedIds.value = new Set([newObj.id]);
   startEditing(newObj.id);
   triggerSave();
-  showToast('Created text note');
+  showToast('Created note');
 }
 
 function onSelectIconFromPalette(icon: IconItem) {
@@ -1806,6 +1894,12 @@ async function toggleAlwaysOnTop() {
   overflow: hidden;
   background-color: #0b0c14;
   user-select: none;
+}
+
+.pinboard-workspace.is-panning,
+.pinboard-workspace.is-panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
 }
 
 .canvas-viewport {

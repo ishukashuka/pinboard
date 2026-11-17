@@ -64,52 +64,65 @@
           {{ conn.label }}
         </text>
       </g>
-
-      <!-- Selection Handles on endpoints when selected (Excalidraw-like interactive editing) -->
-      <template v-if="selectedConnectorId === conn.id">
-        <!-- Start Handle -->
-        <g class="handle-group">
-          <!-- Hit circle -->
-          <circle
-            :cx="conn.x1"
-            :cy="conn.y1"
-            :r="Math.max(12, 14 / zoom)"
-            class="endpoint-hit"
-            @mousedown.stop="$emit('start-drag-endpoint', conn.id, 'start', $event)"
-          />
-          <!-- Visual handle -->
-          <rect
-            :x="conn.x1 - (4.5 / zoom)"
-            :y="conn.y1 - (4.5 / zoom)"
-            :width="9 / zoom"
-            :height="9 / zoom"
-            :rx="2 / zoom"
-            class="connector-handle"
-          />
-        </g>
-
-        <!-- End Handle -->
-        <g class="handle-group">
-          <!-- Hit circle -->
-          <circle
-            :cx="conn.x2"
-            :cy="conn.y2"
-            :r="Math.max(12, 14 / zoom)"
-            class="endpoint-hit"
-            @mousedown.stop="$emit('start-drag-endpoint', conn.id, 'end', $event)"
-          />
-          <!-- Visual handle -->
-          <rect
-            :x="conn.x2 - (4.5 / zoom)"
-            :y="conn.y2 - (4.5 / zoom)"
-            :width="9 / zoom"
-            :height="9 / zoom"
-            :rx="2 / zoom"
-            class="connector-handle"
-          />
-        </g>
-      </template>
     </g>
+  </svg>
+
+  <!-- High z-index overlay for selection handles, draft connector, and snap ring -->
+  <svg class="connectors-overlay">
+    <defs>
+      <marker
+        id="arrow-draft"
+        viewBox="0 0 10 10"
+        refX="7"
+        refY="5"
+        markerWidth="6"
+        markerHeight="6"
+        orient="auto-start-reverse"
+      >
+        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#c084fc" />
+      </marker>
+    </defs>
+
+    <!-- Selection Handles on endpoints when selected (Excalidraw-like interactive editing) -->
+    <template v-if="selectedConnector">
+      <!-- Start Handle -->
+      <g class="handle-group">
+        <circle
+          :cx="selectedConnector.x1"
+          :cy="selectedConnector.y1"
+          :r="Math.max(12, 14 / zoom)"
+          class="endpoint-hit"
+          @mousedown.stop="$emit('start-drag-endpoint', selectedConnector.id, 'start', $event)"
+        />
+        <rect
+          :x="selectedConnector.x1 - (4.5 / zoom)"
+          :y="selectedConnector.y1 - (4.5 / zoom)"
+          :width="9 / zoom"
+          :height="9 / zoom"
+          :rx="2 / zoom"
+          class="connector-handle"
+        />
+      </g>
+
+      <!-- End Handle -->
+      <g class="handle-group">
+        <circle
+          :cx="selectedConnector.x2"
+          :cy="selectedConnector.y2"
+          :r="Math.max(12, 14 / zoom)"
+          class="endpoint-hit"
+          @mousedown.stop="$emit('start-drag-endpoint', selectedConnector.id, 'end', $event)"
+        />
+        <rect
+          :x="selectedConnector.x2 - (4.5 / zoom)"
+          :y="selectedConnector.y2 - (4.5 / zoom)"
+          :width="9 / zoom"
+          :height="9 / zoom"
+          :rx="2 / zoom"
+          class="connector-handle"
+        />
+      </g>
+    </template>
 
     <!-- Snap Highlight Indicator during connection or endpoint drag -->
     <g v-if="snapTarget" class="snap-indicator">
@@ -135,7 +148,7 @@
         stroke="#c084fc"
         stroke-width="2.5"
         stroke-dasharray="6 4"
-        :marker-end="`url(#arrow-${sanitizeColor('#c084fc')})`"
+        marker-end="url(#arrow-draft)"
       />
       <circle :cx="draftConnector.x1" :cy="draftConnector.y1" :r="5 / zoom" fill="#c084fc" />
       <circle :cx="draftConnector.x2" :cy="draftConnector.y2" :r="5 / zoom" fill="#c084fc" />
@@ -286,6 +299,10 @@ const computedConnectors = computed(() => {
     };
   });
 });
+
+const selectedConnector = computed(() => {
+  return computedConnectors.value.find((c) => c.id === props.selectedConnectorId) || null;
+});
 </script>
 
 <style scoped>
@@ -297,7 +314,18 @@ const computedConnectors = computed(() => {
   height: 100%;
   pointer-events: none;
   overflow: visible;
-  z-index: 50;
+  z-index: 5;
+}
+
+.connectors-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 600;
 }
 
 .hit-path {
