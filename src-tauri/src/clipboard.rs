@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
 use uuid::Uuid;
 use crate::models::ClipboardResult;
@@ -16,24 +17,37 @@ impl ClipboardManager {
 
     /// Read current clipboard content (image or text)
     pub fn read_clipboard(&self) -> Result<ClipboardResult, String> {
-        // 1. Try Wayland wl-paste first if available
-        if let Ok(result) = self.read_from_wl_paste() {
-            if result.kind != "empty" {
-                return Ok(result);
+        #[cfg(target_os = "linux")]
+        {
+            // 1. Try Wayland wl-paste first if available
+            if let Ok(result) = self.read_from_wl_paste() {
+                if result.kind != "empty" {
+                    return Ok(result);
+                }
+            }
+
+            // 2. Try arboard cross-platform clipboard
+            if let Ok(result) = self.read_from_arboard() {
+                if result.kind != "empty" {
+                    return Ok(result);
+                }
+            }
+
+            // 3. Try X11 xclip
+            if let Ok(result) = self.read_from_xclip() {
+                if result.kind != "empty" {
+                    return Ok(result);
+                }
             }
         }
 
-        // 2. Try arboard cross-platform clipboard
-        if let Ok(result) = self.read_from_arboard() {
-            if result.kind != "empty" {
-                return Ok(result);
-            }
-        }
-
-        // 3. Try X11 xclip
-        if let Ok(result) = self.read_from_xclip() {
-            if result.kind != "empty" {
-                return Ok(result);
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Windows / macOS: Use arboard native OS clipboard directly
+            if let Ok(result) = self.read_from_arboard() {
+                if result.kind != "empty" {
+                    return Ok(result);
+                }
             }
         }
 
@@ -47,6 +61,7 @@ impl ClipboardManager {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn read_from_wl_paste(&self) -> Result<ClipboardResult, String> {
         // Query types
         let output = Command::new("wl-paste")
@@ -158,6 +173,7 @@ impl ClipboardManager {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn read_from_xclip(&self) -> Result<ClipboardResult, String> {
         // Try getting image via xclip
         let img_output = Command::new("xclip")
@@ -231,32 +247,39 @@ impl ClipboardManager {
     pub fn write_text(&self, text: &str) -> Result<(), String> {
         let mut written = false;
 
-        // Wayland wl-copy
-        if let Ok(mut child) = Command::new("wl-copy").stdin(Stdio::piped()).spawn() {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            let _ = child.wait();
-            written = true;
-        }
-
-        // X11 xclip
-        if let Ok(mut child) = Command::new("xclip")
-            .args(["-selection", "clipboard"])
-            .stdin(Stdio::piped())
-            .spawn()
+        #[cfg(target_os = "linux")]
         {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
+            // Wayland wl-copy
+            if let Ok(mut child) = Command::new("wl-copy").stdin(Stdio::piped()).spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let _ = child.wait();
+                written = true;
             }
-            let _ = child.wait();
-            written = true;
+
+            // X11 xclip
+            if !written {
+                if let Ok(mut child) = Command::new("xclip")
+                    .args(["-selection", "clipboard"])
+                    .stdin(Stdio::piped())
+                    .spawn()
+                {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(text.as_bytes());
+                    }
+                    let _ = child.wait();
+                    written = true;
+                }
+            }
         }
 
-        // arboard fallback
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            if cb.set_text(text.to_string()).is_ok() {
-                written = true;
+        // arboard cross-platform (native Win32 on Windows, fallback on Linux)
+        if !written {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                if cb.set_text(text.to_string()).is_ok() {
+                    written = true;
+                }
             }
         }
 
@@ -292,44 +315,51 @@ impl ClipboardManager {
 
         let mut written = false;
 
-        // 1. Wayland wl-copy
-        if let Ok(mut child) = Command::new("wl-copy")
-            .args(["--type", "image/png"])
-            .stdin(Stdio::piped())
-            .spawn()
+        #[cfg(target_os = "linux")]
         {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&bytes);
+            // 1. Wayland wl-copy
+            if let Ok(mut child) = Command::new("wl-copy")
+                .args(["--type", "image/png"])
+                .stdin(Stdio::piped())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(&bytes);
+                }
+                let _ = child.wait();
+                written = true;
             }
-            let _ = child.wait();
-            written = true;
-        }
 
-        // 2. X11 xclip
-        if let Ok(mut child) = Command::new("xclip")
-            .args(["-selection", "clipboard", "-t", "image/png", "-i"])
-            .stdin(Stdio::piped())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&bytes);
-            }
-            let _ = child.wait();
-            written = true;
-        }
-
-        // 3. Arboard
-        if let Ok(dyn_img) = image::load_from_memory(&bytes) {
-            let rgba = dyn_img.to_rgba8();
-            let (w, h) = rgba.dimensions();
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                let img_data = arboard::ImageData {
-                    width: w as usize,
-                    height: h as usize,
-                    bytes: std::borrow::Cow::Owned(rgba.into_raw()),
-                };
-                if cb.set_image(img_data).is_ok() {
+            // 2. X11 xclip
+            if !written {
+                if let Ok(mut child) = Command::new("xclip")
+                    .args(["-selection", "clipboard", "-t", "image/png", "-i"])
+                    .stdin(Stdio::piped())
+                    .spawn()
+                {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(&bytes);
+                    }
+                    let _ = child.wait();
                     written = true;
+                }
+            }
+        }
+
+        // 3. Arboard (native Win32 on Windows, fallback on Linux)
+        if !written {
+            if let Ok(dyn_img) = image::load_from_memory(&bytes) {
+                let rgba = dyn_img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let img_data = arboard::ImageData {
+                        width: w as usize,
+                        height: h as usize,
+                        bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+                    };
+                    if cb.set_image(img_data).is_ok() {
+                        written = true;
+                    }
                 }
             }
         }

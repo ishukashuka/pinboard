@@ -91,7 +91,46 @@ windowrulev2 = center, class:^(com.pinboard.desktop)$
 
 ---
 
-## Running and Building
+## Installation & Distribution
+
+Pinboard provides standalone, self-contained packages for Linux and Windows.
+
+### Linux (x86_64)
+
+#### Portable AppImage (Recommended for Arch, Hyprland, Fedora, Ubuntu)
+Download `Pinboard_0.2.4_amd64.AppImage`, make it executable, and run:
+```bash
+chmod +x Pinboard_0.2.4_amd64.AppImage
+./Pinboard_0.2.4_amd64.AppImage
+```
+The AppImage bundles its own WebKitGTK and runtime dependencies without requiring external library installations.
+
+#### Debian / Ubuntu (.deb)
+```bash
+sudo dpkg -i pinboard_0.2.4_amd64.deb
+# If missing dependencies:
+sudo apt-get install -f
+```
+
+### Windows (x64)
+
+#### NSIS Installer
+Run `Pinboard_0.2.4_x64-setup.exe`. This performs a clean, per-user installation without requiring administrator privileges. If Microsoft Edge WebView2 runtime is not detected on your system, the installer will automatically download and configure the official evergreen bootstrapper.
+
+#### Portable Executable
+Run `Pinboard_0.2.4_x64-portable.exe` directly from any folder or USB drive.
+
+---
+
+## Running and Building from Source
+
+### Prerequisites
+- **Node.js**: v20 or newer
+- **Rust**: stable toolchain (`rustup default stable`)
+- **Linux system dependencies** (Ubuntu/Debian):
+  ```bash
+  sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev squashfs-tools
+  ```
 
 ### Development Mode
 ```bash
@@ -100,12 +139,16 @@ npm run tauri dev
 
 ### Production Build
 ```bash
-npm run tauri build
-```
-The optimized release executable will be located at:
-`src-tauri/target/release/pinboard`
+# Build optimized release binary
+npm run tauri build -- --no-bundle
 
-Pre-packaged bundles (`.deb` and `.rpm`) are located in:
+# Build Linux AppImage and .deb bundles
+APPIMAGE_EXTRACT_AND_RUN=1 npx tauri build --bundles appimage,deb
+
+# Build Windows NSIS installer (on Windows or CI)
+npx tauri build --bundles nsis
+```
+Built binaries and installers are located in:
 `src-tauri/target/release/bundle/`
 
 ### Automated Tests
@@ -114,3 +157,21 @@ Run unit and integration tests:
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 ```
+
+---
+
+## CI/CD Release Automation
+
+Pinboard includes a GitHub Actions workflow (`.github/workflows/release.yml`) for automated cross-platform builds:
+- Triggers on tag pushes (`v*`) and manual trigger (`workflow_dispatch`).
+- Compiles native Linux AppImage and Debian packages on `ubuntu-22.04`.
+- Compiles native Windows NSIS installer and standalone portable `.exe` on `windows-latest`.
+- Attaches all release packages to workflow artifacts and drafts a new GitHub Release.
+
+---
+
+## Acknowledgments & Inspiration
+
+Pinboard is proudly inspired by:
+- **PureRef** — for spatial reference management, effortless image arranging, and distraction-free framing.
+- **Excalidraw** — for fluid canvas navigation, tactile feedback, and intuitive connector routing.
