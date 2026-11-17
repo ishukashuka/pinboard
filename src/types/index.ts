@@ -1,4 +1,4 @@
-export type ObjectKind = 'text' | 'image' | 'url' | 'code' | 'diagram_node';
+export type ObjectKind = 'text' | 'image' | 'url' | 'code' | 'diagram_node' | 'icon';
 
 export type DiagramNodeType =
   | 'router'
@@ -18,6 +18,10 @@ export interface ObjectMeta {
   mime_type?: string;
   natural_width?: number;
   natural_height?: number;
+  icon_id?: string;
+  icon_category?: string;
+  icon_label?: string;
+  color?: string;
   font_size?: number;
   font_family?: 'mono' | 'sans';
   word_wrap?: boolean;

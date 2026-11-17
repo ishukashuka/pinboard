@@ -1,9 +1,9 @@
 <template>
   <div class="modal-backdrop" @click.self="$emit('close')">
-    <div class="shortcuts-card">
+    <div class="shortcuts-card" @keydown.esc.stop="$emit('close')">
       <div class="modal-header">
         <span class="modal-title">Keyboard & Mouse Shortcuts</span>
-        <button class="modal-close-btn" @click="$emit('close')">✕</button>
+        <button class="modal-close-btn" @click="$emit('close')" title="Close (Esc)">✕</button>
       </div>
 
       <div class="shortcuts-grid">
@@ -11,10 +11,10 @@
           <div class="section-title">Tools</div>
           <div class="shortcut-row"><span class="sc-key">V</span><span class="sc-desc">Select Tool</span></div>
           <div class="shortcut-row"><span class="sc-key">H</span><span class="sc-desc">Pan / Hand Tool</span></div>
-          <div class="shortcut-row"><span class="sc-key">T</span><span class="sc-desc">New Text Note</span></div>
+          <div class="shortcut-row"><span class="sc-key">N / T</span><span class="sc-desc">New Text Note</span></div>
           <div class="shortcut-row"><span class="sc-key">C</span><span class="sc-desc">Connector Tool</span></div>
           <div class="shortcut-row"><span class="sc-key">/</span><span class="sc-desc">Search to Focus</span></div>
-          <div class="shortcut-row"><span class="sc-key">Esc</span><span class="sc-desc">Exit to Canvas / Select</span></div>
+          <div class="shortcut-row"><span class="sc-key">Esc</span><span class="sc-desc">Exit / Deselect / Cancel</span></div>
         </div>
 
         <div class="shortcut-section">
@@ -51,9 +51,27 @@
 </template>
 
 <script setup lang="ts">
-defineEmits<{
+import { onMounted, onBeforeUnmount } from 'vue';
+
+const emit = defineEmits<{
   (e: 'close'): void;
 }>();
+
+function onKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    emit('close');
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeyDown, { capture: true });
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown, { capture: true });
+});
 </script>
 
 <style scoped>
@@ -99,13 +117,15 @@ defineEmits<{
 .modal-close-btn {
   background: transparent;
   border: none;
-  color: #64748b;
+  color: #94a3b8;
+  font-size: 15px;
   cursor: pointer;
-  font-size: 16px;
+  padding: 4px;
+  border-radius: 4px;
 }
-
 .modal-close-btn:hover {
   color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .shortcuts-grid {
@@ -117,15 +137,15 @@ defineEmits<{
 .shortcut-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .section-title {
   font-size: 11px;
   font-weight: 700;
-  color: #c084fc;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
+  color: #a855f7;
   margin-bottom: 4px;
 }
 
@@ -133,20 +153,23 @@ defineEmits<{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 13px;
+  color: #cbd5e1;
 }
 
 .sc-key {
-  font-family: ui-monospace, monospace;
-  background: #1f2136;
-  border: 1px solid #2d304f;
-  color: #e2e8f0;
-  padding: 1px 6px;
-  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
+  font-weight: 600;
+  background: #0b0c14;
+  border: 1px solid #282a40;
+  border-radius: 5px;
+  padding: 2px 7px;
+  color: #f8fafc;
 }
 
 .sc-desc {
+  font-size: 12px;
   color: #94a3b8;
 }
 </style>

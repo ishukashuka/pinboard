@@ -1,50 +1,52 @@
 <template>
-  <div class="search-backdrop" @click.self="emit('close')">
-    <div class="search-modal" @keydown.stop>
+  <div class="search-backdrop" @click.self="$emit('close')">
+    <div class="search-modal" @keydown.esc.stop="$emit('close')">
+      <!-- Search input header -->
       <div class="search-input-wrapper">
-        <span class="search-icon">🔍</span>
+        <Search :size="16" class="search-icon" />
         <input
           ref="inputRef"
           v-model="query"
           type="text"
           class="search-input"
-          placeholder="Search text, titles, filenames, URLs... (↑/↓ to navigate, Enter to jump, Esc to exit)"
+          placeholder="Search notes, code, links, images, connectors..."
           @keydown.down.prevent="selectNext"
           @keydown.up.prevent="selectPrev"
           @keydown.ctrl.n.prevent="selectNext"
           @keydown.ctrl.p.prevent="selectPrev"
           @keydown.enter.prevent="confirmSelection"
-          @keydown.esc.prevent="emit('close')"
         />
-        <span v-if="query" class="result-count">{{ filteredResults.length }} results</span>
+        <span v-if="filteredResults.length > 0" class="result-count">
+          {{ filteredResults.length }} {{ filteredResults.length === 1 ? 'match' : 'matches' }}
+        </span>
+        <button class="modal-close-btn" @click="$emit('close')">✕</button>
       </div>
 
-      <div class="search-results-list" ref="listRef">
+      <!-- Results list -->
+      <div ref="listRef" class="search-results-list">
         <div v-if="filteredResults.length === 0" class="no-results">
-          <span v-if="query">No matching objects found</span>
+          <span v-if="query">No matching objects or connectors found</span>
           <span v-else class="search-tip">Type to search anything on the canvas...</span>
         </div>
 
         <div
           v-for="(item, idx) in filteredResults"
-          :key="item.id"
+          :key="`${item.isConnector ? 'conn-' : 'obj-'}${item.id}`"
           class="result-item"
           :class="{ 'is-active': idx === activeIndex }"
           @mouseenter="activeIndex = idx"
           @click="selectItem(item)"
         >
           <div class="result-icon-badge" :class="`kind-${item.kind}`">
-            <span v-if="item.kind === 'text'">TXT</span>
-            <span v-else-if="item.kind === 'image'">IMG</span>
-            <span v-else>URL</span>
+            <component :is="getResultIcon(item)" :size="14" />
           </div>
 
           <div class="result-details">
             <div class="result-title-row">
-              <span class="result-title">{{ item.title || item.kind.toUpperCase() }}</span>
-              <span class="result-match-field">in {{ item.matchField }}</span>
+              <span class="result-title">{{ item.title }}</span>
+              <span class="result-match-field">{{ item.matchField }}</span>
             </div>
-            <div class="result-snippet">{{ item.snippet }}</div>
+            <div v-if="item.snippet" class="result-snippet">{{ item.snippet }}</div>
           </div>
 
           <div class="result-coords">
@@ -53,26 +55,56 @@
         </div>
       </div>
 
+      <!-- Footer tips -->
       <div class="search-footer">
-        <span><kbd>↑</kbd><kbd>↓</kbd> or <kbd>Ctrl+N</kbd>/<kbd>P</kbd> to navigate</span>
-        <span><kbd>Enter</kbd> jump to object</span>
-        <span><kbd>Esc</kbd> close</span>
+        <div class="footer-tip">
+          <kbd>↑</kbd><kbd>↓</kbd> or <kbd>Ctrl+N</kbd>/<kbd>P</kbd> to navigate
+        </div>
+        <div class="footer-tip">
+          <kbd>Enter</kbd> jump to object
+        </div>
+        <div class="footer-tip">
+          <kbd>Esc</kbd> close
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from 'vue';
-import type { BoardObject, SearchResult } from '../types';
+import { ref, computed, onMounted, nextTick } from 'vue';
+import {
+  Search,
+  FileText,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  Code2,
+  Spline,
+  Boxes,
+} from 'lucide-vue-next';
+import type { BoardConnector, BoardObject } from '../types';
+
+export interface ExtendedSearchResult {
+  id: string;
+  kind: string;
+  title: string;
+  snippet: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  matchField: string;
+  isConnector?: boolean;
+}
 
 const props = defineProps<{
   objects: BoardObject[];
+  connectors: BoardConnector[];
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'jump-to', result: SearchResult): void;
+  (e: 'jump-to', result: ExtendedSearchResult): void;
 }>();
 
 const query = ref('');
@@ -86,96 +118,143 @@ onMounted(() => {
   });
 });
 
-const filteredResults = computed<SearchResult[]>(() => {
+const filteredResults = computed<ExtendedSearchResult[]>(() => {
   const q = query.value.trim().toLowerCase();
-  if (!q) {
-    // Show first 15 objects as recent/overview
-    return props.objects.slice(0, 15).map((obj) => ({
-      id: obj.id,
-      kind: obj.kind,
-      title: obj.title || `${obj.kind.toUpperCase()} Object`,
-      snippet: obj.kind === 'image'
-        ? (obj.meta?.original_filename || 'Embedded Image')
-        : (obj.content ? obj.content.slice(0, 120).replace(/\n/g, ' ') : ''),
-      x: obj.x,
-      y: obj.y,
-      width: obj.width,
-      height: obj.height,
-      matchField: 'canvas',
-    }));
-  }
+  const results: ExtendedSearchResult[] = [];
 
-  const results: SearchResult[] = [];
-
+  // Search Objects
   for (const obj of props.objects) {
-    let matched = false;
-    let matchField = '';
-    let snippet = '';
+    const title = (obj.title || '').toLowerCase();
+    const content = (obj.content || '').toLowerCase();
+    const origFile = (obj.meta?.original_filename || '').toLowerCase();
+    const iconLabel = (obj.meta?.icon_label || '').toLowerCase();
 
-    // 1. Check title
-    if (obj.title && obj.title.toLowerCase().includes(q)) {
-      matched = true;
-      matchField = 'title';
-      snippet = obj.title;
-    }
-
-    // 2. Check content (text, url)
-    if (!matched && obj.content && obj.content.toLowerCase().includes(q)) {
-      matched = true;
-      matchField = obj.kind === 'url' ? 'URL' : 'content';
-      const idx = obj.content.toLowerCase().indexOf(q);
-      const start = Math.max(0, idx - 30);
-      const end = Math.min(obj.content.length, idx + 70);
-      snippet = (start > 0 ? '...' : '') + obj.content.slice(start, end).replace(/\n/g, ' ') + (end < obj.content.length ? '...' : '');
-    }
-
-    // 3. Check meta (filename, labels)
-    if (!matched && obj.meta) {
-      if (obj.meta.original_filename && obj.meta.original_filename.toLowerCase().includes(q)) {
-        matched = true;
-        matchField = 'filename';
-        snippet = obj.meta.original_filename;
+    if (!q) {
+      // Recent overview items
+      let displayTitle = obj.title;
+      let snippet = obj.content;
+      if (obj.kind === 'image') {
+        displayTitle = obj.title || obj.meta?.original_filename || 'Image';
+        snippet = obj.meta?.original_filename || 'Embedded Image';
+      } else if (obj.kind === 'icon') {
+        displayTitle = obj.title || obj.meta?.icon_label || 'Icon';
+        snippet = obj.meta?.icon_category || 'Symbol';
       }
-    }
-
-    if (matched) {
       results.push({
         id: obj.id,
         kind: obj.kind,
-        title: obj.title || (obj.kind === 'image' ? (obj.meta?.original_filename || 'Image') : 'Text Block'),
-        snippet: snippet || (obj.kind === 'image' ? 'Image object' : obj.content.slice(0, 80)),
+        title: displayTitle || `${obj.kind.toUpperCase()}`,
+        snippet: snippet ? snippet.slice(0, 100).replace(/\n/g, ' ') : '',
         x: obj.x,
         y: obj.y,
         width: obj.width,
         height: obj.height,
-        matchField,
+        matchField: 'Overview',
+      });
+      continue;
+    }
+
+    if (title.includes(q)) {
+      results.push({
+        id: obj.id,
+        kind: obj.kind,
+        title: obj.title || `${obj.kind.toUpperCase()}`,
+        snippet: obj.content ? obj.content.slice(0, 100).replace(/\n/g, ' ') : '',
+        x: obj.x,
+        y: obj.y,
+        width: obj.width,
+        height: obj.height,
+        matchField: 'Title',
+      });
+    } else if (content.includes(q)) {
+      results.push({
+        id: obj.id,
+        kind: obj.kind,
+        title: obj.title || `${obj.kind.toUpperCase()}`,
+        snippet: obj.content ? obj.content.slice(0, 100).replace(/\n/g, ' ') : '',
+        x: obj.x,
+        y: obj.y,
+        width: obj.width,
+        height: obj.height,
+        matchField: obj.kind === 'url' ? 'URL' : 'Content',
+      });
+    } else if (origFile.includes(q)) {
+      results.push({
+        id: obj.id,
+        kind: obj.kind,
+        title: obj.title || obj.meta?.original_filename || 'Image',
+        snippet: obj.meta?.original_filename || '',
+        x: obj.x,
+        y: obj.y,
+        width: obj.width,
+        height: obj.height,
+        matchField: 'Filename',
+      });
+    } else if (iconLabel.includes(q)) {
+      results.push({
+        id: obj.id,
+        kind: obj.kind,
+        title: obj.title || obj.meta?.icon_label || 'Icon',
+        snippet: obj.meta?.icon_category || '',
+        x: obj.x,
+        y: obj.y,
+        width: obj.width,
+        height: obj.height,
+        matchField: 'Icon',
       });
     }
   }
 
-  return results;
+  // Search Connectors (Labels)
+  for (const conn of props.connectors) {
+    if (conn.label) {
+      const labelLower = conn.label.toLowerCase();
+      if (!q || labelLower.includes(q)) {
+        results.push({
+          id: conn.id,
+          kind: 'connector',
+          title: conn.label,
+          snippet: `Connector (${conn.line_type}, ${conn.color})`,
+          x: (conn.from_x + conn.to_x) / 2,
+          y: (conn.from_y + conn.to_y) / 2,
+          width: 60,
+          height: 30,
+          matchField: 'Connector Label',
+          isConnector: true,
+        });
+      }
+    }
+  }
+
+  return results.slice(0, 25);
 });
 
-watch(filteredResults, () => {
-  activeIndex.value = 0;
-});
+function getResultIcon(item: ExtendedSearchResult) {
+  if (item.isConnector || item.kind === 'connector') return Spline;
+  if (item.kind === 'image') return ImageIcon;
+  if (item.kind === 'url') return LinkIcon;
+  if (item.kind === 'code') return Code2;
+  if (item.kind === 'icon') return Boxes;
+  return FileText;
+}
 
 function selectNext() {
   if (filteredResults.value.length === 0) return;
   activeIndex.value = (activeIndex.value + 1) % filteredResults.value.length;
-  scrollActiveIntoView();
+  scrollToActive();
 }
 
 function selectPrev() {
   if (filteredResults.value.length === 0) return;
   activeIndex.value = (activeIndex.value - 1 + filteredResults.value.length) % filteredResults.value.length;
-  scrollActiveIntoView();
+  scrollToActive();
 }
 
-function scrollActiveIntoView() {
+function scrollToActive() {
   nextTick(() => {
-    if (!listRef.value) return;
-    const activeEl = listRef.value.querySelector('.result-item.is-active') as HTMLElement;
+    const list = listRef.value;
+    if (!list) return;
+    const activeEl = list.children[activeIndex.value] as HTMLElement;
     if (activeEl) {
       activeEl.scrollIntoView({ block: 'nearest' });
     }
@@ -183,13 +262,14 @@ function scrollActiveIntoView() {
 }
 
 function confirmSelection() {
-  if (filteredResults.value.length > 0) {
-    const item = filteredResults.value[activeIndex.value];
-    selectItem(item);
+  if (filteredResults.value.length === 0) return;
+  const target = filteredResults.value[activeIndex.value];
+  if (target) {
+    selectItem(target);
   }
 }
 
-function selectItem(item: SearchResult) {
+function selectItem(item: ExtendedSearchResult) {
   emit('jump-to', item);
   emit('close');
 }
@@ -204,65 +284,70 @@ function selectItem(item: SearchResult) {
   height: 100vh;
   background: rgba(0, 0, 0, 0.65);
   backdrop-filter: blur(4px);
-  z-index: 9999;
+  z-index: 10090;
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding-top: 12vh;
+  padding-top: 100px;
 }
 
 .search-modal {
-  width: 640px;
+  width: 580px;
   max-width: 90vw;
-  background: #18181b;
-  border: 1px solid #3f3f46;
-  border-radius: 12px;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.7);
+  background: #141525;
+  border: 1px solid #2a2c42;
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: fadeIn 0.12s ease-out;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .search-input-wrapper {
   display: flex;
   align-items: center;
-  padding: 14px 16px;
-  border-bottom: 1px solid #27272a;
-  background: #202025;
-  gap: 12px;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #23253a;
+  background: #10111f;
 }
 
 .search-icon {
-  font-size: 16px;
-  opacity: 0.6;
+  color: #c084fc;
 }
 
 .search-input {
   flex: 1;
   background: transparent;
   border: none;
+  font-size: 14px;
+  color: #f8fafc;
   outline: none;
-  font-size: 15px;
-  color: #f4f4f5;
-  font-family: inherit;
 }
-
 .search-input::placeholder {
-  color: #71717a;
+  color: #64748b;
 }
 
 .result-count {
   font-size: 11px;
-  color: #a1a1aa;
-  background: #27272a;
+  color: #94a3b8;
+  background: #1c1d30;
   padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.modal-close-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 3px 6px;
   border-radius: 4px;
+}
+.modal-close-btn:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .search-results-list {
@@ -270,17 +355,19 @@ function selectItem(item: SearchResult) {
   overflow-y: auto;
   padding: 8px;
 }
-
-.no-results {
-  padding: 32px 16px;
-  text-align: center;
-  color: #71717a;
-  font-size: 14px;
+.search-results-list::-webkit-scrollbar {
+  width: 5px;
+}
+.search-results-list::-webkit-scrollbar-thumb {
+  background: #2a2c42;
+  border-radius: 3px;
 }
 
-.search-tip {
+.no-results {
+  text-align: center;
+  padding: 32px 16px;
+  color: #64748b;
   font-size: 13px;
-  color: #52525b;
 }
 
 .result-item {
@@ -290,98 +377,95 @@ function selectItem(item: SearchResult) {
   padding: 10px 12px;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.1s ease;
-  user-select: none;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
 }
-
 .result-item:hover,
 .result-item.is-active {
-  background: #27272a;
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.35);
 }
 
 .result-icon-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 3px 6px;
-  border-radius: 4px;
-  letter-spacing: 0.5px;
-  flex-shrink: 0;
-}
-
-.result-icon-badge.kind-text {
-  background: rgba(56, 189, 248, 0.2);
-  color: #38bdf8;
-}
-
-.result-icon-badge.kind-image {
-  background: rgba(168, 85, 247, 0.2);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #1c1d30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #c084fc;
-}
-
-.result-icon-badge.kind-url {
-  background: rgba(74, 222, 128, 0.2);
-  color: #4ade80;
 }
 
 .result-details {
   flex: 1;
-  overflow: hidden;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .result-title-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 
 .result-title {
-  font-weight: 600;
   font-size: 13px;
-  color: #f4f4f5;
+  font-weight: 600;
+  color: #f1f5f9;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .result-match-field {
-  font-size: 11px;
-  color: #71717a;
+  font-size: 10px;
+  color: #a855f7;
+  background: rgba(168, 85, 247, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
 }
 
 .result-snippet {
-  font-size: 12px;
-  color: #a1a1aa;
+  font-size: 11px;
+  color: #94a3b8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
 .result-coords {
   font-size: 11px;
-  color: #52525b;
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #64748b;
 }
 
 .search-footer {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 8px 16px;
-  background: #141417;
-  border-top: 1px solid #27272a;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #10111f;
+  border-top: 1px solid #23253a;
   font-size: 11px;
-  color: #71717a;
+  color: #64748b;
+}
+
+.footer-tip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 kbd {
-  background: #27272a;
-  color: #d4d4d8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: #1b1d30;
+  border: 1px solid #2b2e45;
+  border-radius: 4px;
   padding: 1px 5px;
-  border-radius: 3px;
+  color: #cbd5e1;
   font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  margin: 0 2px;
 }
 </style>

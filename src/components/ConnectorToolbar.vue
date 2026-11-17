@@ -1,19 +1,19 @@
 <template>
-  <div class="connector-toolbar" :style="toolbarStyle" @mousedown.stop>
-    <!-- Line Type Dropdown -->
+  <div ref="toolbarRef" class="connector-toolbar" :style="toolbarStyle" @mousedown.stop @keydown.esc.stop="closeAllMenus">
+    <!-- 1. Line Type Dropdown -->
     <div class="tool-dropdown-wrap">
-      <button class="tb-btn" @click="toggleMenu('lineType')" title="Line Type">
+      <button class="tb-btn" :class="{ 'is-open': activeMenu === 'lineType' }" title="Line Shape" @click.stop="toggleMenu('lineType')">
         <component :is="lineTypeIcon" :size="14" />
         <ChevronDown :size="12" class="chevron" />
       </button>
-      <div v-if="activeMenu === 'lineType'" class="tb-dropdown-menu">
+      <div v-if="activeMenu === 'lineType'" class="tb-dropdown-menu" @click.stop>
         <button
           class="tb-menu-item"
           :class="{ 'is-active': connector.line_type === 'curved' }"
           @click="setLineType('curved')"
         >
           <Spline :size="14" />
-          <span>Curved</span>
+          <span>Curved (S-Curve)</span>
         </button>
         <button
           class="tb-menu-item"
@@ -21,7 +21,7 @@
           @click="setLineType('orthogonal')"
         >
           <CornerDownRight :size="14" />
-          <span>Orthogonal</span>
+          <span>Elbow (90°)</span>
         </button>
         <button
           class="tb-menu-item"
@@ -36,13 +36,13 @@
 
     <div class="tb-divider"></div>
 
-    <!-- Arrowhead Dropdown -->
+    <!-- 2. Arrowhead Dropdown -->
     <div class="tool-dropdown-wrap">
-      <button class="tb-btn" @click="toggleMenu('arrow')" title="Arrowhead">
+      <button class="tb-btn" :class="{ 'is-open': activeMenu === 'arrow' }" title="Arrowheads" @click.stop="toggleMenu('arrow')">
         <ArrowRight :size="14" />
         <ChevronDown :size="12" class="chevron" />
       </button>
-      <div v-if="activeMenu === 'arrow'" class="tb-dropdown-menu">
+      <div v-if="activeMenu === 'arrow'" class="tb-dropdown-menu" @click.stop>
         <button
           class="tb-menu-item"
           :class="{ 'is-active': connector.arrow_end === 'none' && connector.arrow_start === 'none' }"
@@ -80,13 +80,14 @@
 
     <div class="tb-divider"></div>
 
-    <!-- Stroke Style Dropdown -->
+    <!-- 3. Stroke Style & Width Dropdown -->
     <div class="tool-dropdown-wrap">
-      <button class="tb-btn" @click="toggleMenu('stroke')" title="Stroke Style">
+      <button class="tb-btn" :class="{ 'is-open': activeMenu === 'stroke' }" title="Stroke Style & Width" @click.stop="toggleMenu('stroke')">
         <span class="stroke-sample" :class="connector.stroke_style">---</span>
         <ChevronDown :size="12" class="chevron" />
       </button>
-      <div v-if="activeMenu === 'stroke'" class="tb-dropdown-menu">
+      <div v-if="activeMenu === 'stroke'" class="tb-dropdown-menu" @click.stop>
+        <div class="menu-section-title">Stroke Pattern</div>
         <button
           class="tb-menu-item"
           :class="{ 'is-active': connector.stroke_style === 'solid' }"
@@ -108,17 +109,30 @@
         >
           <span>Dotted</span>
         </button>
+
+        <div class="menu-section-title">Thickness</div>
+        <div class="width-selector">
+          <button
+            v-for="w in [1.5, 2.5, 4.0]"
+            :key="w"
+            class="width-btn"
+            :class="{ 'is-active': connector.stroke_width === w }"
+            @click="setStrokeWidth(w)"
+          >
+            <div class="width-bar" :style="{ height: `${w * 1.5}px` }"></div>
+          </button>
+        </div>
       </div>
     </div>
 
     <div class="tb-divider"></div>
 
-    <!-- Color Picker Dot -->
+    <!-- 4. Color Swatches -->
     <div class="tool-dropdown-wrap">
-      <button class="color-btn" @click="toggleMenu('color')" title="Line Color">
+      <button class="color-btn" :class="{ 'is-open': activeMenu === 'color' }" title="Line Color" @click.stop="toggleMenu('color')">
         <span class="color-dot" :style="{ backgroundColor: connector.color }"></span>
       </button>
-      <div v-if="activeMenu === 'color'" class="color-palette-popover">
+      <div v-if="activeMenu === 'color'" class="color-palette-popover" @click.stop>
         <button
           v-for="c in colorOptions"
           :key="c"
@@ -132,23 +146,23 @@
 
     <div class="tb-divider"></div>
 
-    <!-- Label Input -->
+    <!-- 5. Label Input -->
     <div class="label-input-wrap">
       <input
         v-model="labelDraft"
         class="tb-label-input"
-        placeholder="Label..."
+        placeholder="Add label... (e.g. PON, 10G)"
         @input="onLabelChange"
-        @keydown.enter.stop
+        @keydown.enter.stop="blurInput"
       />
-      <button v-if="labelDraft" class="clear-btn" @click="clearLabel" title="Clear label">
+      <button v-if="labelDraft" class="clear-btn" title="Clear label" @click.stop="clearLabel">
         <X :size="12" />
       </button>
     </div>
 
     <div class="tb-divider"></div>
 
-    <!-- Delete Button -->
+    <!-- 6. Delete Button -->
     <button class="tb-btn btn-delete" title="Delete Connector" @click="$emit('delete', connector.id)">
       <Trash2 :size="14" />
     </button>
@@ -182,6 +196,7 @@ const emit = defineEmits<{
   (e: 'delete', id: string): void;
 }>();
 
+const toolbarRef = ref<HTMLDivElement | null>(null);
 const activeMenu = ref<'lineType' | 'arrow' | 'stroke' | 'color' | null>(null);
 const labelDraft = ref(props.connector.label || '');
 
@@ -192,12 +207,22 @@ watch(
   }
 );
 
-const toolbarStyle = computed(() => ({
-  position: 'fixed' as const,
-  left: `${Math.max(16, props.screenX)}px`,
-  top: `${Math.max(56, props.screenY - 50)}px`,
-  zIndex: 10050,
-}));
+const toolbarStyle = computed(() => {
+  // Center toolbar horizontally on screenX, place 45px above connector
+  const tbWidth = 340;
+  let left = Math.max(16, props.screenX - tbWidth / 2);
+  if (left + tbWidth > window.innerWidth - 16) {
+    left = window.innerWidth - tbWidth - 16;
+  }
+  let top = props.screenY - 50;
+  if (top < 56) top = props.screenY + 30; // flip below if off top
+  return {
+    position: 'fixed' as const,
+    left: `${left}px`,
+    top: `${top}px`,
+    zIndex: 10050,
+  };
+});
 
 const lineTypeIcon = computed(() => {
   switch (props.connector.line_type) {
@@ -211,16 +236,22 @@ const lineTypeIcon = computed(() => {
 });
 
 const colorOptions = [
-  '#a855f7', // Purple
-  '#ffffff', // White
+  '#c084fc', // Purple (target accent)
+  '#a855f7', // Violet
   '#38bdf8', // Cyan
-  '#4ade80', // Green
-  '#facc15', // Yellow
-  '#f87171', // Red
+  '#4ade80', // Emerald Green
+  '#facc15', // Amber Yellow
+  '#f87171', // Rose Red
+  '#f1f5f9', // Crisp White
+  '#94a3b8', // Muted Slate
 ];
 
 function toggleMenu(menu: 'lineType' | 'arrow' | 'stroke' | 'color') {
   activeMenu.value = activeMenu.value === menu ? null : menu;
+}
+
+function closeAllMenus() {
+  activeMenu.value = null;
 }
 
 function setLineType(type: 'curved' | 'orthogonal' | 'straight') {
@@ -238,6 +269,11 @@ function setStrokeStyle(style: 'solid' | 'dashed' | 'dotted') {
   activeMenu.value = null;
 }
 
+function setStrokeWidth(width: number) {
+  emit('update', { stroke_width: width });
+  activeMenu.value = null;
+}
+
 function setColor(color: string) {
   emit('update', { color });
   activeMenu.value = null;
@@ -252,16 +288,22 @@ function clearLabel() {
   emit('update', { label: undefined });
 }
 
-function onDocClick(e: MouseEvent) {
-  activeMenu.value = null;
+function blurInput(e: Event) {
+  (e.target as HTMLInputElement)?.blur();
+}
+
+function onGlobalClick(e: MouseEvent) {
+  if (toolbarRef.value && !toolbarRef.value.contains(e.target as Node)) {
+    activeMenu.value = null;
+  }
 }
 
 onMounted(() => {
-  window.addEventListener('click', onDocClick);
+  window.addEventListener('click', onGlobalClick);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('click', onDocClick);
+  window.removeEventListener('click', onGlobalClick);
 });
 </script>
 
@@ -269,19 +311,20 @@ onBeforeUnmount(() => {
 .connector-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  background: #171828;
-  border: 1px solid #2d2f47;
-  border-radius: 12px;
-  padding: 4px 8px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+  gap: 3px;
+  background: #141525;
+  border: 1px solid #282a42;
+  border-radius: 10px;
+  padding: 4px 6px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
   user-select: none;
-  animation: fadeIn 0.12s ease-out;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+.tb-divider {
+  width: 1px;
+  height: 18px;
+  background: #24263b;
+  margin: 0 2px;
 }
 
 .tool-dropdown-wrap {
@@ -291,19 +334,25 @@ onBeforeUnmount(() => {
 .tb-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   background: transparent;
-  border: none;
-  color: #cbd5e1;
-  padding: 5px 6px;
+  border: 1px solid transparent;
   border-radius: 6px;
+  padding: 5px 6px;
+  color: #cbd5e1;
   cursor: pointer;
-  transition: all 0.1s;
+  font-size: 12px;
+  transition: all 0.15s ease;
+}
+.tb-btn:hover,
+.tb-btn.is-open {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
 }
 
-.tb-btn:hover {
-  background: #23253d;
-  color: #fff;
+.btn-delete:hover {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fb7185;
 }
 
 .chevron {
@@ -311,8 +360,9 @@ onBeforeUnmount(() => {
 }
 
 .stroke-sample {
-  font-family: monospace;
+  font-family: ui-monospace, monospace;
   font-size: 11px;
+  letter-spacing: -1px;
   color: #cbd5e1;
 }
 
@@ -320,66 +370,96 @@ onBeforeUnmount(() => {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  min-width: 130px;
-  background: #151624;
-  border: 1px solid #282a40;
+  background: #141525;
+  border: 1px solid #2a2c42;
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   padding: 4px;
-  z-index: 10060;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 130px;
+  z-index: 10060;
+}
+
+.menu-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  padding: 4px 8px 2px;
 }
 
 .tb-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 5px 8px;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
+  padding: 5px 8px;
   color: #cbd5e1;
   font-size: 12px;
   cursor: pointer;
   text-align: left;
+  transition: all 0.15s ease;
 }
-
 .tb-menu-item:hover {
-  background: #23253d;
-  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
 }
-
 .tb-menu-item.is-active {
   background: rgba(168, 85, 247, 0.2);
   color: #c084fc;
   font-weight: 600;
 }
 
-.tb-divider {
-  width: 1px;
-  height: 18px;
-  background: #292b42;
-  margin: 0 2px;
+.width-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
 }
 
-/* Color picker dot */
-.color-btn {
+.width-btn {
+  flex: 1;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
+  background: #11121d;
+  border: 1px solid #23253a;
+  border-radius: 4px;
   cursor: pointer;
+  transition: all 0.15s ease;
+}
+.width-btn:hover {
+  background: #1e1b4b;
+  border-color: #a855f7;
+}
+.width-btn.is-active {
+  background: rgba(168, 85, 247, 0.25);
+  border-color: #c084fc;
 }
 
-.color-btn:hover {
-  background: #23253d;
+.width-bar {
+  width: 18px;
+  background: #f1f5f9;
+  border-radius: 1px;
+}
+
+.color-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.color-btn:hover,
+.color-btn.is-open {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .color-dot {
@@ -394,79 +474,63 @@ onBeforeUnmount(() => {
   top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  display: flex;
-  gap: 6px;
-  background: #151624;
-  border: 1px solid #282a40;
+  background: #141525;
+  border: 1px solid #2a2c42;
   border-radius: 8px;
   padding: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
   z-index: 10060;
 }
 
 .color-swatch {
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: 4px;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: transform 0.1s;
+  transition: transform 0.15s ease;
 }
-
 .color-swatch:hover {
   transform: scale(1.15);
 }
-
 .color-swatch.is-selected {
-  border-color: #fff;
-  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.6);
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px #a855f7;
 }
 
-/* Label Input */
 .label-input-wrap {
+  position: relative;
   display: flex;
   align-items: center;
-  background: #1f2136;
-  border: 1px solid #303352;
-  border-radius: 6px;
-  padding: 2px 6px;
 }
 
 .tb-label-input {
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 12px;
+  background: #0f101d;
+  border: 1px solid #24263b;
+  border-radius: 6px;
+  padding: 4px 22px 4px 8px;
+  font-size: 11px;
   color: #f1f5f9;
-  width: 90px;
-  font-family: inherit;
+  width: 125px;
+  outline: none;
 }
-
-.tb-label-input::placeholder {
-  color: #64748b;
+.tb-label-input:focus {
+  border-color: #a855f7;
 }
 
 .clear-btn {
+  position: absolute;
+  right: 5px;
   background: transparent;
   border: none;
   color: #64748b;
   cursor: pointer;
-  padding: 2px;
-  display: flex;
-  align-items: center;
+  padding: 1px;
 }
-
 .clear-btn:hover {
   color: #f1f5f9;
-}
-
-/* Delete button */
-.btn-delete {
-  color: #f87171;
-}
-
-.btn-delete:hover {
-  background: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
 }
 </style>

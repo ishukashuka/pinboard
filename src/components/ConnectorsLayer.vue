@@ -23,6 +23,7 @@
       <path
         :d="conn.path"
         class="hit-path"
+        :stroke-width="Math.max(16, 20 / zoom)"
         @mousedown.stop="$emit('select-connector', conn.id, $event)"
       />
 
@@ -64,25 +65,66 @@
         </text>
       </g>
 
-      <!-- Selection Handles on endpoints when selected -->
+      <!-- Selection Handles on endpoints when selected (Excalidraw-like interactive editing) -->
       <template v-if="selectedConnectorId === conn.id">
-        <rect
-          :x="conn.x1 - 4.5"
-          :y="conn.y1 - 4.5"
-          width="9"
-          height="9"
-          rx="2"
-          class="connector-handle"
-        />
-        <rect
-          :x="conn.x2 - 4.5"
-          :y="conn.y2 - 4.5"
-          width="9"
-          height="9"
-          rx="2"
-          class="connector-handle"
-        />
+        <!-- Start Handle -->
+        <g class="handle-group">
+          <!-- Hit circle -->
+          <circle
+            :cx="conn.x1"
+            :cy="conn.y1"
+            :r="Math.max(12, 14 / zoom)"
+            class="endpoint-hit"
+            @mousedown.stop="$emit('start-drag-endpoint', conn.id, 'start', $event)"
+          />
+          <!-- Visual handle -->
+          <rect
+            :x="conn.x1 - (4.5 / zoom)"
+            :y="conn.y1 - (4.5 / zoom)"
+            :width="9 / zoom"
+            :height="9 / zoom"
+            :rx="2 / zoom"
+            class="connector-handle"
+          />
+        </g>
+
+        <!-- End Handle -->
+        <g class="handle-group">
+          <!-- Hit circle -->
+          <circle
+            :cx="conn.x2"
+            :cy="conn.y2"
+            :r="Math.max(12, 14 / zoom)"
+            class="endpoint-hit"
+            @mousedown.stop="$emit('start-drag-endpoint', conn.id, 'end', $event)"
+          />
+          <!-- Visual handle -->
+          <rect
+            :x="conn.x2 - (4.5 / zoom)"
+            :y="conn.y2 - (4.5 / zoom)"
+            :width="9 / zoom"
+            :height="9 / zoom"
+            :rx="2 / zoom"
+            class="connector-handle"
+          />
+        </g>
       </template>
+    </g>
+
+    <!-- Snap Highlight Indicator during connection or endpoint drag -->
+    <g v-if="snapTarget" class="snap-indicator">
+      <circle
+        :cx="snapTarget.x"
+        :cy="snapTarget.y"
+        :r="Math.max(10, 12 / zoom)"
+        class="snap-ring"
+      />
+      <circle
+        :cx="snapTarget.x"
+        :cy="snapTarget.y"
+        :r="Math.max(3, 4 / zoom)"
+        class="snap-dot"
+      />
     </g>
 
     <!-- Draft Connector Preview during live dragging -->
@@ -91,12 +133,12 @@
         :d="draftConnector.path"
         class="draft-path"
         stroke="#c084fc"
-        stroke-width="2"
-        stroke-dasharray="5 4"
+        stroke-width="2.5"
+        stroke-dasharray="6 4"
         :marker-end="`url(#arrow-${sanitizeColor('#c084fc')})`"
       />
-      <circle :cx="draftConnector.x1" :cy="draftConnector.y1" r="4.5" fill="#c084fc" />
-      <circle :cx="draftConnector.x2" :cy="draftConnector.y2" r="4.5" fill="#c084fc" />
+      <circle :cx="draftConnector.x1" :cy="draftConnector.y1" :r="5 / zoom" fill="#c084fc" />
+      <circle :cx="draftConnector.x2" :cy="draftConnector.y2" :r="5 / zoom" fill="#c084fc" />
     </g>
   </svg>
 </template>
@@ -110,20 +152,33 @@ const props = defineProps<{
   objects: BoardObject[];
   selectedConnectorId: string | null;
   draftConnector: { x1: number; y1: number; x2: number; y2: number; path: string } | null;
+  snapTarget?: { x: number; y: number } | null;
+  zoom: number;
 }>();
 
 const emit = defineEmits<{
   (e: 'select-connector', id: string, event: MouseEvent): void;
+  (e: 'start-drag-endpoint', id: string, endpoint: 'start' | 'end', event: MouseEvent): void;
 }>();
 
-const markerColors = ['#a855f7', '#c084fc', '#ffffff', '#38bdf8', '#4ade80', '#facc15', '#f87171'];
+const markerColors = [
+  '#c084fc',
+  '#a855f7',
+  '#ffffff',
+  '#38bdf8',
+  '#4ade80',
+  '#facc15',
+  '#f87171',
+  '#f1f5f9',
+  '#94a3b8',
+];
 
 function sanitizeColor(c: string): string {
   return c.replace(/[^a-zA-Z0-9]/g, '');
 }
 
 function getDashArray(style: string): string | undefined {
-  if (style === 'dashed') return '6 5';
+  if (style === 'dashed') return '7 5';
   if (style === 'dotted') return '2 4';
   return undefined;
 }
@@ -179,16 +234,39 @@ const computedConnectors = computed(() => {
     if (c.line_type === 'straight') {
       path = `M ${x1} ${y1} L ${x2} ${y2}`;
     } else if (c.line_type === 'orthogonal') {
-      const mid = (x1 + x2) / 2;
-      path = `M ${x1} ${y1} L ${mid} ${y1} L ${mid} ${y2} L ${x2} ${y2}`;
+      // Clean orthogonal 90-degree elbow route
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+
+      // Determine routing direction based on anchors
+      if (c.from_anchor === 'left' || c.from_anchor === 'right' || (!c.from_anchor && Math.abs(dx) >= Math.abs(dy))) {
+        const mid = x1 + dx / 2;
+        path = `M ${x1} ${y1} L ${mid} ${y1} L ${mid} ${y2} L ${x2} ${y2}`;
+        midX = mid;
+        midY = (y1 + y2) / 2;
+      } else {
+        const mid = y1 + dy / 2;
+        path = `M ${x1} ${y1} L ${x1} ${mid} L ${x2} ${mid} L ${x2} ${y2}`;
+        midX = (x1 + x2) / 2;
+        midY = mid;
+      }
     } else {
       // Curved bezier (S-curve)
       const dx = Math.abs(x2 - x1);
-      const cpDist = Math.max(dx * 0.5, 40);
-      const cp1x = (c.from_anchor === 'left') ? x1 - cpDist : x1 + cpDist;
-      const cp1y = y1;
-      const cp2x = (c.to_anchor === 'right') ? x2 + cpDist : x2 - cpDist;
-      const cp2y = y2;
+      const dy = Math.abs(y2 - y1);
+      const cpDist = Math.max(dx * 0.45, 45);
+
+      let cp1x = (c.from_anchor === 'left') ? x1 - cpDist : x1 + cpDist;
+      let cp1y = y1;
+      let cp2x = (c.to_anchor === 'right') ? x2 + cpDist : x2 - cpDist;
+      let cp2y = y2;
+
+      if (c.from_anchor === 'top') { cp1x = x1; cp1y = y1 - cpDist; }
+      else if (c.from_anchor === 'bottom') { cp1x = x1; cp1y = y1 + cpDist; }
+
+      if (c.to_anchor === 'top') { cp2x = x2; cp2y = y2 - cpDist; }
+      else if (c.to_anchor === 'bottom') { cp2x = x2; cp2y = y2 + cpDist; }
+
       path = `M ${x1} ${y1} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${x2} ${y2}`;
 
       // Bezier mid-point calculation at t = 0.5
@@ -219,60 +297,92 @@ const computedConnectors = computed(() => {
   height: 100%;
   pointer-events: none;
   overflow: visible;
-  z-index: 10;
-}
-
-.connector-group {
-  pointer-events: auto;
+  z-index: 50;
 }
 
 .hit-path {
   fill: none;
   stroke: transparent;
-  stroke-width: 22px;
+  pointer-events: stroke;
   cursor: pointer;
 }
 
 .visible-path {
   fill: none;
-  cursor: pointer;
-  transition: stroke 0.15s ease, filter 0.15s ease;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+  transition: stroke 0.15s ease;
 }
 
 .visible-path.is-selected {
-  stroke: #c084fc !important;
-  filter: drop-shadow(0 0 8px rgba(192, 132, 252, 0.8));
-}
-
-.connector-handle {
-  fill: #ffffff;
-  stroke: #a855f7;
-  stroke-width: 2px;
-  pointer-events: none;
+  filter: drop-shadow(0 0 6px rgba(192, 132, 252, 0.75));
 }
 
 .connector-label-group {
+  pointer-events: auto;
   cursor: pointer;
 }
 
 .label-bg {
-  fill: #171828;
-  stroke: #31334f;
-  stroke-width: 1px;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  fill: #141525;
+  stroke: #2a2c42;
+  stroke-width: 1;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
 }
 
 .label-text {
-  fill: #e2e8f0;
+  fill: #f1f5f9;
   font-size: 11px;
   font-weight: 600;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  letter-spacing: 0.3px;
   user-select: none;
+  dominant-baseline: central;
+}
+
+.connector-group:hover .visible-path {
+  filter: drop-shadow(0 0 4px rgba(192, 132, 252, 0.5));
+}
+
+/* Endpoint Selection Handles */
+.handle-group {
+  pointer-events: auto;
+}
+
+.endpoint-hit {
+  fill: transparent;
+  cursor: grab;
+}
+.endpoint-hit:active {
+  cursor: grabbing;
+}
+
+.connector-handle {
+  fill: #c084fc;
+  stroke: #141525;
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* Snap Indicator */
+.snap-ring {
+  fill: rgba(192, 132, 252, 0.25);
+  stroke: #c084fc;
+  stroke-width: 2;
+  animation: pulseSnap 1.2s infinite ease-in-out;
+}
+
+.snap-dot {
+  fill: #ffffff;
+}
+
+@keyframes pulseSnap {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(0.9); opacity: 0.7; }
 }
 
 .draft-path {
   fill: none;
-  pointer-events: none;
+  stroke-linecap: round;
 }
 </style>

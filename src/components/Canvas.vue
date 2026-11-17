@@ -16,15 +16,23 @@
       @reset-camera="resetCamera"
       @toggle-always-on-top="toggleAlwaysOnTop"
       @toggle-shortcuts="isShortcutsOpen = true"
-      @clear-board="clearBoard"
+      @clear-board="openClearConfirm"
     />
 
     <!-- 2. LEFT FLOATING TOOL RAIL -->
     <ToolRail
       v-model:active-tool="activeTool"
+      :is-icon-palette-open="isIconPaletteOpen"
       @import-image="triggerImageFileInput"
-      @create-link="promptCreateLink"
-      @spawn-diagram-node="spawnDiagramNode"
+      @create-link="isLinkModalOpen = true"
+      @toggle-icon-palette="isIconPaletteOpen = !isIconPaletteOpen"
+    />
+
+    <!-- Icon Library Palette Dropdown -->
+    <IconPalette
+      v-if="isIconPaletteOpen"
+      @select-icon="onSelectIconFromPalette"
+      @close="isIconPaletteOpen = false"
     />
 
     <!-- Hidden file input for Image tool -->
@@ -40,12 +48,7 @@
     <div
       ref="canvasViewportRef"
       class="canvas-viewport"
-      :class="{
-        'is-panning': isPanning,
-        'is-space-down': isSpaceDown,
-        'cursor-crosshair': activeTool === 'connector',
-      }"
-      :style="gridStyle"
+      :style="[gridStyle, { cursor: canvasCursor }]"
       tabindex="0"
       @mousedown="onViewportMouseDown"
       @mousemove="onMouseMove"
@@ -63,10 +66,13 @@
           :objects="objects"
           :selected-connector-id="selectedConnectorId"
           :draft-connector="draftConnector"
+          :snap-target="snapTarget"
+          :zoom="camera.zoom"
           @select-connector="onSelectConnector"
+          @start-drag-endpoint="onStartDragEndpoint"
         />
 
-        <!-- Board Objects (Images, Notes, Snippets, Links, Network Diagram Nodes) -->
+        <!-- Board Objects (Images, Notes, Snippets, Links, Icons, Diagram Nodes) -->
         <BoardObjectView
           v-for="obj in objects"
           :key="obj.id"
@@ -125,12 +131,32 @@
       <SearchModal
         v-if="isSearchOpen"
         :objects="objects"
+        :connectors="connectors"
         @close="isSearchOpen = false"
         @jump-to="handleSearchJump"
       />
 
       <!-- Shortcuts Reference Modal -->
       <ShortcutsModal v-if="isShortcutsOpen" @close="isShortcutsOpen = false" />
+
+      <!-- Link Creation Modal -->
+      <LinkModal
+        v-if="isLinkModalOpen"
+        @create="onCreateLinkFromModal"
+        @cancel="isLinkModalOpen = false"
+      />
+
+      <!-- Clear Board Confirmation Modal -->
+      <div v-if="isClearConfirmOpen" class="confirm-backdrop" @click.self="isClearConfirmOpen = false">
+        <div class="confirm-dialog" @keydown.esc.stop="isClearConfirmOpen = false">
+          <div class="confirm-title">Clear Board</div>
+          <p class="confirm-msg">Are you sure you want to delete all objects and connectors from this board? This action can be undone.</p>
+          <div class="confirm-actions">
+            <button class="btn btn-secondary" @click="isClearConfirmOpen = false">Cancel</button>
+            <button class="btn btn-danger" @click="confirmClearBoard">Clear All</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -143,24 +169,25 @@ import type {
   BoardConnector,
   BoardObject,
   Camera,
-  DiagramNodeType,
-  SearchResult,
 } from '../types';
+import { api } from '../utils/api';
 import TopBar from './TopBar.vue';
 import ToolRail from './ToolRail.vue';
+import BottomHUD from './BottomHUD.vue';
+import BoardObjectView from './BoardObjectView.vue';
 import ConnectorsLayer from './ConnectorsLayer.vue';
 import ConnectorToolbar from './ConnectorToolbar.vue';
-import BoardObjectView from './BoardObjectView.vue';
-import BottomHUD from './BottomHUD.vue';
 import SearchModal from './SearchModal.vue';
 import ShortcutsModal from './ShortcutsModal.vue';
-import { api } from '../utils/api';
+import LinkModal from './LinkModal.vue';
+import IconPalette from './IconPalette.vue';
+import type { IconItem } from '../utils/iconRegistry';
+import type { ExtendedSearchResult } from './SearchModal.vue';
 
 const props = defineProps<{
   boardId?: string;
 }>();
 
-// --- STATE ---
 const canvasViewportRef = ref<HTMLDivElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
@@ -176,38 +203,34 @@ const camera = reactive<Camera>({
   zoom: 1,
 });
 
-// Camera history for Back navigation (e.g. after search jump)
 const previousCamera = ref<Camera | null>(null);
 
+// Active Tool & UI States
 const activeTool = ref<ActiveTool>('select');
 const selectedIds = ref<Set<string>>(new Set());
 const selectedConnectorId = ref<string | null>(null);
 const editingId = ref<string | null>(null);
-const highlightedId = ref<string | null>(null);
 
 const isSearchOpen = ref(false);
 const isShortcutsOpen = ref(false);
+const isLinkModalOpen = ref(false);
+const isIconPaletteOpen = ref(false);
+const isClearConfirmOpen = ref(false);
 const alwaysOnTop = ref(false);
+const highlightedId = ref<string | null>(null);
 const toastMessage = ref<string | null>(null);
+let toastTimer: any = null;
 
-// Interaction states
-const isSpaceDown = ref(false);
-const isPanning = ref(false);
-const panStart = { x: 0, y: 0, initialPanX: 0, initialPanY: 0 };
+// Marquee Selection State
+const marqueeStart = ref<{ x: number; y: number } | null>(null);
+const marqueeCurrent = ref<{ x: number; y: number } | null>(null);
 
-// Selection box (Screen coordinates)
-const selectionBox = ref<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
+// Dragging and Resizing State
+const isDraggingObjects = ref(false);
+const dragStartPos = ref<{ x: number; y: number } | null>(null);
+const dragObjectOffsets = ref<Map<string, { x: number; y: number }>>(new Map());
 
-// Dragging objects state
-interface DragState {
-  startX: number;
-  startY: number;
-  initialPositions: Map<string, { x: number; y: number }>;
-}
-const dragState = ref<DragState | null>(null);
-
-// Resizing state
-interface ResizeState {
+const resizeState = ref<{
   objectId: string;
   handle: string;
   startX: number;
@@ -217,18 +240,43 @@ interface ResizeState {
   initialW: number;
   initialH: number;
   aspectRatio: number;
-}
-const resizeState = ref<ResizeState | null>(null);
+} | null>(null);
 
-// Connector Creation / Drafting
-interface ConnectDraftState {
-  fromId: string;
-  fromAnchor: AnchorPosition;
+// Connector Drafting State
+const connectingState = ref<{
+  fromId?: string;
+  fromAnchor?: AnchorPosition;
   startX: number;
   startY: number;
-}
-const connectingState = ref<ConnectDraftState | null>(null);
-const draftConnector = ref<{ x1: number; y1: number; x2: number; y2: number; path: string } | null>(null);
+} | null>(null);
+
+// Connector Endpoint Dragging State
+const endpointDragState = ref<{
+  connectorId: string;
+  endpoint: 'start' | 'end';
+} | null>(null);
+
+// Snapping Indicator for anchors
+const snapTarget = ref<{
+  x: number;
+  y: number;
+  objectId: string;
+  anchor: AnchorPosition;
+} | null>(null);
+
+const draftConnector = ref<{
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  path: string;
+} | null>(null);
+
+// Panning states
+const isPanning = ref(false);
+const panStart = ref({ x: 0, y: 0 });
+const panCameraStart = ref({ x: 0, y: 0 });
+const isSpaceDown = ref(false);
 
 // Mouse pointer coordinates in screen space
 const mouseScreen = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -287,37 +335,51 @@ function redo() {
   showToast('Redo');
 }
 
-// --- STYLES ---
+// Single source of truth cursor
+const canvasCursor = computed(() => {
+  if (isPanning.value) return 'grabbing';
+  if (isSpaceDown.value || activeTool.value === 'hand') return 'grab';
+  if (activeTool.value === 'connector') return 'crosshair';
+  if (activeTool.value === 'text') return 'text';
+  if (activeTool.value === 'marquee') return 'crosshair';
+  return 'default';
+});
+
+// Viewport styles
 const worldTransformStyle = computed(() => ({
   transform: `translate(${camera.panX}px, ${camera.panY}px) scale(${camera.zoom})`,
   transformOrigin: '0 0',
 }));
 
 const gridStyle = computed(() => {
-  const gridSize = 28 * camera.zoom;
-  const dotSize = Math.max(1, 1.4 * camera.zoom);
+  const size = 28 * camera.zoom;
+  const offsetX = camera.panX % size;
+  const offsetY = camera.panY % size;
   return {
-    backgroundSize: `${gridSize}px ${gridSize}px`,
-    backgroundPosition: `${camera.panX}px ${camera.panY}px`,
-    backgroundImage: `radial-gradient(circle, #25273c ${dotSize}px, transparent ${dotSize}px)`,
+    backgroundPosition: `${offsetX}px ${offsetY}px`,
+    backgroundSize: `${size}px ${size}px`,
   };
+});
+
+const selectionBox = computed(() => {
+  if (!marqueeStart.value || !marqueeCurrent.value) return null;
+  const x1 = Math.min(marqueeStart.value.x, marqueeCurrent.value.x);
+  const y1 = Math.min(marqueeStart.value.y, marqueeCurrent.value.y);
+  const x2 = Math.max(marqueeStart.value.x, marqueeCurrent.value.x);
+  const y2 = Math.max(marqueeStart.value.y, marqueeCurrent.value.y);
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 });
 
 const selectionBoxStyle = computed(() => {
   if (!selectionBox.value) return {};
-  const left = Math.min(selectionBox.value.startX, selectionBox.value.currentX);
-  const top = Math.min(selectionBox.value.startY, selectionBox.value.currentY);
-  const width = Math.abs(selectionBox.value.currentX - selectionBox.value.startX);
-  const height = Math.abs(selectionBox.value.currentY - selectionBox.value.startY);
   return {
-    left: `${left}px`,
-    top: `${top}px`,
-    width: `${width}px`,
-    height: `${height}px`,
+    left: `${selectionBox.value.x}px`,
+    top: `${selectionBox.value.y}px`,
+    width: `${selectionBox.value.width}px`,
+    height: `${selectionBox.value.height}px`,
   };
 });
 
-// Selected Connector Helper
 const selectedConnector = computed(() => {
   if (!selectedConnectorId.value) return null;
   return connectors.value.find((c) => c.id === selectedConnectorId.value) || null;
@@ -368,7 +430,7 @@ const selectedConnectorScreenPos = computed(() => {
 
   if (conn.line_type === 'curved') {
     const dx = Math.abs(x2 - x1);
-    const cpDist = Math.max(dx * 0.5, 40);
+    const cpDist = Math.max(dx * 0.45, 45);
     const cp1x = (conn.from_anchor === 'left') ? x1 - cpDist : x1 + cpDist;
     const cp1y = y1;
     const cp2x = (conn.to_anchor === 'right') ? x2 + cpDist : x2 - cpDist;
@@ -395,11 +457,49 @@ function worldToScreen(wx: number, wy: number): { x: number; y: number } {
   };
 }
 
+// Find closest anchor on any object (snapping within 40px screen distance)
+function findClosestAnchor(
+  worldX: number,
+  worldY: number,
+  excludeObjId?: string
+): { x: number; y: number; objectId: string; anchor: AnchorPosition } | null {
+  const SNAP_DISTANCE = 42 / camera.zoom;
+  let closest: { x: number; y: number; objectId: string; anchor: AnchorPosition; dist: number } | null = null;
+
+  for (const obj of objects.value) {
+    if (excludeObjId && obj.id === excludeObjId) continue;
+
+    const anchorsList: { anchor: AnchorPosition; x: number; y: number }[] = [
+      { anchor: 'top', x: obj.x + obj.width / 2, y: obj.y },
+      { anchor: 'bottom', x: obj.x + obj.width / 2, y: obj.y + obj.height },
+      { anchor: 'left', x: obj.x, y: obj.y + obj.height / 2 },
+      { anchor: 'right', x: obj.x + obj.width, y: obj.y + obj.height / 2 },
+    ];
+
+    for (const a of anchorsList) {
+      const d = Math.hypot(worldX - a.x, worldY - a.y);
+      if (d <= SNAP_DISTANCE) {
+        if (!closest || d < closest.dist) {
+          closest = { x: a.x, y: a.y, objectId: obj.id, anchor: a.anchor, dist: d };
+        }
+      }
+    }
+  }
+
+  return closest ? { x: closest.x, y: closest.y, objectId: closest.objectId, anchor: closest.anchor } : null;
+}
+
+// Build SVG path for draft connector preview
+function buildDraftPath(x1: number, y1: number, x2: number, y2: number): string {
+  const dx = Math.abs(x2 - x1);
+  const cpDist = Math.max(dx * 0.45, 45);
+  return `M ${x1} ${y1} C ${x1 + cpDist} ${y1}, ${x2 - cpDist} ${y2}, ${x2} ${y2}`;
+}
+
 // --- TOAST HELPER ---
-let toastTimer: any = null;
 function showToast(msg: string) {
   toastMessage.value = msg;
-  clearTimeout(toastTimer);
+  if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toastMessage.value = null;
   }, 2200);
@@ -448,7 +548,7 @@ async function loadBoardData(id: string) {
     objects.value = data.objects || [];
     connectors.value = data.connectors || [];
 
-    // If initial load contains the reference layout, preset selection to match screenshot
+    // If initial load contains reference layout, preset selection to match screenshot
     if (objects.value.some((o) => o.id === 'sample-img-mountain')) {
       selectedIds.value = new Set(['sample-img-mountain']);
       selectedConnectorId.value = 'conn-olt-onu1';
@@ -474,32 +574,14 @@ function onBoardRenamed(name: string) {
 
 // --- GLOBAL CAPTURE HANDLERS FOR PANNING & MIDDLE-CLICK ---
 function onGlobalMouseDownCapture(e: MouseEvent) {
-  // 1. Middle mouse button anywhere -> start panning
+  mouseScreen.x = e.clientX;
+  mouseScreen.y = e.clientY;
+
+  // Middle mouse button (button === 1) starts panning
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
-    e.stopImmediatePropagation();
-
-    isPanning.value = true;
-    panStart.x = e.clientX;
-    panStart.y = e.clientY;
-    panStart.initialPanX = camera.panX;
-    panStart.initialPanY = camera.panY;
-    return;
-  }
-
-  // 2. Space + Left click anywhere -> start panning
-  if (e.button === 0 && (isSpaceDown.value || activeTool.value === 'hand')) {
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-
-    isPanning.value = true;
-    panStart.x = e.clientX;
-    panStart.y = e.clientY;
-    panStart.initialPanX = camera.panX;
-    panStart.initialPanY = camera.panY;
-    return;
+    startPanning(e.clientX, e.clientY);
   }
 }
 
@@ -507,7 +589,6 @@ function onGlobalAuxClickCapture(e: MouseEvent) {
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
-    e.stopImmediatePropagation();
   }
 }
 
@@ -516,166 +597,314 @@ function onGlobalMouseMoveCapture(e: MouseEvent) {
   mouseScreen.y = e.clientY;
 
   if (isPanning.value) {
-    e.preventDefault();
-    e.stopPropagation();
-    const dx = e.clientX - panStart.x;
-    const dy = e.clientY - panStart.y;
-    camera.panX = panStart.initialPanX + dx;
-    camera.panY = panStart.initialPanY + dy;
-    return;
-  }
-
-  // Handle connector drafting preview
-  if (connectingState.value) {
-    const mouseWorld = screenToWorld(e.clientX, e.clientY);
-    const startX = connectingState.value.startX;
-    const startY = connectingState.value.startY;
-    const dx = Math.abs(mouseWorld.x - startX);
-    const cpDist = Math.max(dx * 0.5, 30);
-    const cp1x = startX + cpDist;
-    const cp2x = mouseWorld.x - cpDist;
-
-    draftConnector.value = {
-      x1: startX,
-      y1: startY,
-      x2: mouseWorld.x,
-      y2: mouseWorld.y,
-      path: `M ${startX} ${startY} C ${cp1x} ${startY}, ${cp2x} ${mouseWorld.y}, ${mouseWorld.x} ${mouseWorld.y}`,
-    };
+    const dx = e.clientX - panStart.value.x;
+    const dy = e.clientY - panStart.value.y;
+    camera.panX = panCameraStart.value.x + dx;
+    camera.panY = panCameraStart.value.y + dy;
   }
 }
 
 function onGlobalMouseUpCapture(e: MouseEvent) {
-  if (isPanning.value && (e.button === 1 || e.button === 0)) {
-    isPanning.value = false;
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    triggerSave();
-    return;
-  }
-
-  // Complete connector creation on mouse up
-  if (connectingState.value) {
-    const mouseWorld = screenToWorld(e.clientX, e.clientY);
-    let targetId: string | undefined;
-    let targetAnchor: AnchorPosition | undefined = 'left';
-
-    // Find if released over an object
-    for (const obj of objects.value) {
-      if (
-        obj.id !== connectingState.value.fromId &&
-        mouseWorld.x >= obj.x &&
-        mouseWorld.x <= obj.x + obj.width &&
-        mouseWorld.y >= obj.y &&
-        mouseWorld.y <= obj.y + obj.height
-      ) {
-        targetId = obj.id;
-        // Determine closest edge anchor
-        const dLeft = Math.abs(mouseWorld.x - obj.x);
-        const dRight = Math.abs(mouseWorld.x - (obj.x + obj.width));
-        const dTop = Math.abs(mouseWorld.y - obj.y);
-        const dBottom = Math.abs(mouseWorld.y - (obj.y + obj.height));
-        const minD = Math.min(dLeft, dRight, dTop, dBottom);
-        if (minD === dLeft) targetAnchor = 'left';
-        else if (minD === dRight) targetAnchor = 'right';
-        else if (minD === dTop) targetAnchor = 'top';
-        else targetAnchor = 'bottom';
-        break;
-      }
-    }
-
-    pushUndo();
-    const newConnector: BoardConnector = {
-      id: crypto.randomUUID(),
-      board_id: currentBoardId.value,
-      from_id: connectingState.value.fromId,
-      from_anchor: connectingState.value.fromAnchor,
-      from_x: connectingState.value.startX,
-      from_y: connectingState.value.startY,
-      to_id: targetId,
-      to_anchor: targetId ? targetAnchor : undefined,
-      to_x: mouseWorld.x,
-      to_y: mouseWorld.y,
-      line_type: 'curved',
-      arrow_start: 'none',
-      arrow_end: 'arrow',
-      stroke_style: 'solid',
-      color: '#c084fc',
-      stroke_width: 2.0,
-      label: undefined,
-    };
-
-    connectors.value.push(newConnector);
-    selectedConnectorId.value = newConnector.id;
-    connectingState.value = null;
-    draftConnector.value = null;
-    activeTool.value = 'select';
-    triggerSave();
-    showToast('Created connector');
+  if (e.button === 1 && isPanning.value) {
+    stopPanning();
   }
 }
 
 function onWindowBlur() {
+  if (isPanning.value) stopPanning();
   isSpaceDown.value = false;
+  isDraggingObjects.value = false;
+  resizeState.value = null;
+  connectingState.value = null;
+  endpointDragState.value = null;
+  snapTarget.value = null;
+  draftConnector.value = null;
+}
+
+// --- PANNING HELPERS ---
+function startPanning(clientX: number, clientY: number) {
+  isPanning.value = true;
+  panStart.value = { x: clientX, y: clientY };
+  panCameraStart.value = { x: camera.panX, y: camera.panY };
+}
+
+function stopPanning() {
   if (isPanning.value) {
     isPanning.value = false;
     triggerSave();
   }
 }
 
-// --- VIEWPORT MOUSE HANDLERS (Left click on empty canvas) ---
-function onViewportMouseDown(e: MouseEvent) {
-  if (e.button !== 0 || isSpaceDown.value || activeTool.value === 'hand') return;
+// --- ZOOM ---
+function onWheel(e: WheelEvent) {
+  if (editingId.value) return;
 
-  // Deselect connector
-  selectedConnectorId.value = null;
+  const zoomFactor = 1.12;
+  const direction = e.deltaY < 0 ? 1 : -1;
+  const newZoom = direction > 0 ? camera.zoom * zoomFactor : camera.zoom / zoomFactor;
+  const clampedZoom = Math.min(Math.max(newZoom, 0.1), 5.0);
 
-  // Exit text editing if active
-  if (editingId.value) {
-    exitEditing();
+  const rect = canvasViewportRef.value?.getBoundingClientRect();
+  const mouseX = rect ? e.clientX - rect.left : e.clientX;
+  const mouseY = rect ? e.clientY - rect.top : e.clientY;
+
+  const worldX = (mouseX - camera.panX) / camera.zoom;
+  const worldY = (mouseY - camera.panY) / camera.zoom;
+
+  camera.zoom = clampedZoom;
+  camera.panX = mouseX - worldX * clampedZoom;
+  camera.panY = mouseY - worldY * clampedZoom;
+
+  triggerSave();
+}
+
+function zoomIn() {
+  const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+  camera.zoom = Math.min(camera.zoom * 1.25, 5.0);
+  camera.panX = window.innerWidth / 2 - centerWorld.x * camera.zoom;
+  camera.panY = window.innerHeight / 2 - centerWorld.y * camera.zoom;
+  triggerSave();
+}
+
+function zoomOut() {
+  const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+  camera.zoom = Math.max(camera.zoom / 1.25, 0.1);
+  camera.panX = window.innerWidth / 2 - centerWorld.x * camera.zoom;
+  camera.panY = window.innerHeight / 2 - centerWorld.y * camera.zoom;
+  triggerSave();
+}
+
+function fitAll() {
+  if (objects.value.length === 0) {
+    camera.panX = 0;
+    camera.panY = 0;
+    camera.zoom = 1;
+    triggerSave();
+    return;
   }
 
-  // Handle specific tool actions
-  if (activeTool.value === 'text') {
-    const clickWorld = screenToWorld(e.clientX, e.clientY);
-    createNewNoteAt(clickWorld.x, clickWorld.y);
+  previousCamera.value = { panX: camera.panX, panY: camera.panY, zoom: camera.zoom };
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const obj of objects.value) {
+    minX = Math.min(minX, obj.x);
+    minY = Math.min(minY, obj.y);
+    maxX = Math.max(maxX, obj.x + obj.width);
+    maxY = Math.max(maxY, obj.y + obj.height);
+  }
+
+  const padding = 100;
+  const bboxW = maxX - minX + padding * 2;
+  const bboxH = maxY - minY + padding * 2;
+
+  const viewW = window.innerWidth;
+  const viewH = window.innerHeight - 48; // minus topbar
+
+  const zoomX = viewW / bboxW;
+  const zoomY = viewH / bboxH;
+  const fitZoom = Math.min(Math.max(Math.min(zoomX, zoomY), 0.15), 1.5);
+
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+
+  camera.zoom = fitZoom;
+  camera.panX = viewW / 2 - centerX * fitZoom;
+  camera.panY = (viewH / 2 + 48) - centerY * fitZoom;
+
+  triggerSave();
+  showToast('Fit view');
+}
+
+function resetCamera() {
+  previousCamera.value = { panX: camera.panX, panY: camera.panY, zoom: camera.zoom };
+  camera.panX = 0;
+  camera.panY = 0;
+  camera.zoom = 1;
+  triggerSave();
+  showToast('Reset view (100%)');
+}
+
+function restorePreviousCamera() {
+  if (previousCamera.value) {
+    const tmp = { panX: camera.panX, panY: camera.panY, zoom: camera.zoom };
+    camera.panX = previousCamera.value.panX;
+    camera.panY = previousCamera.value.panY;
+    camera.zoom = previousCamera.value.zoom;
+    previousCamera.value = tmp;
+    triggerSave();
+    showToast('Restored previous camera');
+  }
+}
+
+// --- VIEWPORT MOUSE INTERACTIONS ---
+function onViewportMouseDown(e: MouseEvent) {
+  if (e.button === 1) return; // Handled globally for pan
+
+  // Hand tool: Left drag pans
+  if (activeTool.value === 'hand' || isSpaceDown.value) {
+    if (e.button === 0) {
+      startPanning(e.clientX, e.clientY);
+      return;
+    }
+  }
+
+  // Text tool: Click to place text note
+  if (activeTool.value === 'text' && e.button === 0) {
+    const world = screenToWorld(e.clientX, e.clientY);
+    spawnTextNote(world.x, world.y);
     activeTool.value = 'select';
     return;
   }
 
-  // Deselect objects unless Shift or Ctrl is pressed
-  if (!e.shiftKey && !e.ctrlKey) {
-    selectedIds.value.clear();
+  // Connector tool: Click/drag anywhere on canvas or near an object
+  if (activeTool.value === 'connector' && e.button === 0) {
+    const world = screenToWorld(e.clientX, e.clientY);
+    const snap = findClosestAnchor(world.x, world.y);
+    const startX = snap ? snap.x : world.x;
+    const startY = snap ? snap.y : world.y;
+
+    connectingState.value = {
+      fromId: snap?.objectId,
+      fromAnchor: snap?.anchor,
+      startX,
+      startY,
+    };
+    snapTarget.value = snap;
+    return;
   }
 
-  // Start marquee selection box (default or marquee tool)
-  selectionBox.value = {
-    startX: e.clientX,
-    startY: e.clientY,
-    currentX: e.clientX,
-    currentY: e.clientY,
-  };
+  // Marquee or Select tool on empty space
+  if (e.button === 0) {
+    selectedConnectorId.value = null;
+    if (!e.shiftKey) {
+      selectedIds.value.clear();
+    }
+    marqueeStart.value = { x: e.clientX, y: e.clientY };
+    marqueeCurrent.value = { x: e.clientX, y: e.clientY };
+  }
 }
 
 function onMouseMove(e: MouseEvent) {
-  mouseScreen.x = e.clientX;
-  mouseScreen.y = e.clientY;
+  // 1. Connector Drafting Live Preview
+  if (connectingState.value) {
+    const world = screenToWorld(e.clientX, e.clientY);
+    const snap = findClosestAnchor(world.x, world.y, connectingState.value.fromId);
+    snapTarget.value = snap;
 
-  if (isPanning.value) return;
+    const toX = snap ? snap.x : world.x;
+    const toY = snap ? snap.y : world.y;
 
-  // 1. Marquee Selection
-  if (selectionBox.value) {
-    selectionBox.value.currentX = e.clientX;
-    selectionBox.value.currentY = e.clientY;
+    draftConnector.value = {
+      x1: connectingState.value.startX,
+      y1: connectingState.value.startY,
+      x2: toX,
+      y2: toY,
+      path: buildDraftPath(connectingState.value.startX, connectingState.value.startY, toX, toY),
+    };
+    return;
+  }
 
-    const sx1 = Math.min(selectionBox.value.startX, selectionBox.value.currentX);
-    const sy1 = Math.min(selectionBox.value.startY, selectionBox.value.currentY);
-    const sx2 = Math.max(selectionBox.value.startX, selectionBox.value.currentX);
-    const sy2 = Math.max(selectionBox.value.startY, selectionBox.value.currentY);
+  // 2. Connector Endpoint Dragging (Excalidraw-like interactive editing)
+  if (endpointDragState.value) {
+    const conn = connectors.value.find((c) => c.id === endpointDragState.value?.connectorId);
+    if (conn) {
+      const world = screenToWorld(e.clientX, e.clientY);
+      const excludeObjId = endpointDragState.value.endpoint === 'start' ? conn.to_id : conn.from_id;
+      const snap = findClosestAnchor(world.x, world.y, excludeObjId);
+      snapTarget.value = snap;
 
-    const wP1 = screenToWorld(sx1, sy1);
-    const wP2 = screenToWorld(sx2, sy2);
+      const targetX = snap ? snap.x : world.x;
+      const targetY = snap ? snap.y : world.y;
+
+      if (endpointDragState.value.endpoint === 'start') {
+        conn.from_id = snap?.objectId;
+        conn.from_anchor = snap?.anchor;
+        conn.from_x = targetX;
+        conn.from_y = targetY;
+      } else {
+        conn.to_id = snap?.objectId;
+        conn.to_anchor = snap?.anchor;
+        conn.to_x = targetX;
+        conn.to_y = targetY;
+      }
+    }
+    return;
+  }
+
+  // 3. Resizing Objects
+  if (resizeState.value) {
+    const { objectId, handle, startX, startY, initialX, initialY, initialW, initialH, aspectRatio } = resizeState.value;
+    const dx = (e.clientX - startX) / camera.zoom;
+    const dy = (e.clientY - startY) / camera.zoom;
+
+    const obj = objects.value.find((o) => o.id === objectId);
+    if (!obj) return;
+
+    let newW = initialW;
+    let newH = initialH;
+    let newX = initialX;
+    let newY = initialY;
+
+    if (handle.includes('e')) newW = Math.max(40, initialW + dx);
+    if (handle.includes('s')) newH = Math.max(30, initialH + dy);
+    if (handle.includes('w')) {
+      const candidateW = initialW - dx;
+      if (candidateW >= 40) {
+        newW = candidateW;
+        newX = initialX + dx;
+      }
+    }
+    if (handle.includes('n')) {
+      const candidateH = initialH - dy;
+      if (candidateH >= 30) {
+        newH = candidateH;
+        newY = initialY + dy;
+      }
+    }
+
+    // Preserve aspect ratio for images unless shift is held
+    if (obj.kind === 'image' && !e.shiftKey) {
+      if (handle.includes('e') || handle.includes('w')) {
+        newH = Math.round(newW / aspectRatio);
+      } else {
+        newW = Math.round(newH * aspectRatio);
+      }
+    }
+
+    obj.x = Math.round(newX);
+    obj.y = Math.round(newY);
+    obj.width = Math.round(newW);
+    obj.height = Math.round(newH);
+    return;
+  }
+
+  // 4. Dragging Selected Objects
+  if (isDraggingObjects.value && dragStartPos.value) {
+    const dx = (e.clientX - dragStartPos.value.x) / camera.zoom;
+    const dy = (e.clientY - dragStartPos.value.y) / camera.zoom;
+
+    for (const obj of objects.value) {
+      if (selectedIds.value.has(obj.id)) {
+        const init = dragObjectOffsets.value.get(obj.id);
+        if (init) {
+          obj.x = Math.round(init.x + dx);
+          obj.y = Math.round(init.y + dy);
+        }
+      }
+    }
+    return;
+  }
+
+  // 5. Marquee Selection
+  if (marqueeStart.value) {
+    marqueeCurrent.value = { x: e.clientX, y: e.clientY };
+
+    const wP1 = screenToWorld(marqueeStart.value.x, marqueeStart.value.y);
+    const wP2 = screenToWorld(e.clientX, e.clientY);
 
     const minX = Math.min(wP1.x, wP2.x);
     const minY = Math.min(wP1.y, wP2.y);
@@ -693,127 +922,85 @@ function onMouseMove(e: MouseEvent) {
       }
     }
     selectedIds.value = newSelected;
-    return;
-  }
-
-  // 2. Dragging Objects
-  if (dragState.value) {
-    const dx = (e.clientX - dragState.value.startX) / camera.zoom;
-    const dy = (e.clientY - dragState.value.startY) / camera.zoom;
-
-    for (const obj of objects.value) {
-      const initial = dragState.value.initialPositions.get(obj.id);
-      if (initial) {
-        obj.x = Math.round(initial.x + dx);
-        obj.y = Math.round(initial.y + dy);
-      }
-    }
-    return;
-  }
-
-  // 3. Resizing Object
-  if (resizeState.value) {
-    const { objectId, handle, startX, startY, initialX, initialY, initialW, initialH, aspectRatio } =
-      resizeState.value;
-    const targetObj = objects.value.find((o) => o.id === objectId);
-    if (!targetObj) return;
-
-    const dx = (e.clientX - startX) / camera.zoom;
-    const dy = (e.clientY - startY) / camera.zoom;
-
-    let newX = initialX;
-    let newY = initialY;
-    let newW = initialW;
-    let newH = initialH;
-
-    const isImage = targetObj.kind === 'image';
-    const keepAspect = isImage && !e.shiftKey;
-
-    if (handle.includes('e')) newW = Math.max(80, initialW + dx);
-    if (handle.includes('s')) newH = Math.max(50, initialH + dy);
-    if (handle.includes('w')) {
-      const maxW = initialW - dx;
-      if (maxW >= 80) {
-        newW = maxW;
-        newX = initialX + dx;
-      }
-    }
-    if (handle.includes('n')) {
-      const maxH = initialH - dy;
-      if (maxH >= 50) {
-        newH = maxH;
-        newY = initialY + dy;
-      }
-    }
-
-    if (keepAspect && aspectRatio > 0) {
-      if (handle === 'e' || handle === 'w') {
-        newH = newW / aspectRatio;
-      } else {
-        newW = newH * aspectRatio;
-      }
-    }
-
-    targetObj.x = Math.round(newX);
-    targetObj.y = Math.round(newY);
-    targetObj.width = Math.round(newW);
-    targetObj.height = Math.round(newH);
   }
 }
 
-function onMouseUp() {
-  if (selectionBox.value) {
-    selectionBox.value = null;
-    if (activeTool.value === 'marquee') {
-      activeTool.value = 'select';
+function onMouseUp(e: MouseEvent) {
+  // 1. Finish Connector Drafting
+  if (connectingState.value) {
+    const world = screenToWorld(e.clientX, e.clientY);
+    const dist = Math.hypot(world.x - connectingState.value.startX, world.y - connectingState.value.startY);
+
+    if (dist >= 10) {
+      const toX = snapTarget.value ? snapTarget.value.x : world.x;
+      const toY = snapTarget.value ? snapTarget.value.y : world.y;
+
+      const newConn: BoardConnector = {
+        id: crypto.randomUUID(),
+        board_id: currentBoardId.value,
+        from_id: connectingState.value.fromId,
+        from_anchor: connectingState.value.fromAnchor,
+        from_x: connectingState.value.startX,
+        from_y: connectingState.value.startY,
+        to_id: snapTarget.value?.objectId,
+        to_anchor: snapTarget.value?.anchor,
+        to_x: toX,
+        to_y: toY,
+        line_type: 'curved',
+        arrow_start: 'none',
+        arrow_end: 'arrow',
+        stroke_style: 'solid',
+        color: '#c084fc',
+        stroke_width: 2.0,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+
+      pushUndo();
+      connectors.value.push(newConn);
+      selectedConnectorId.value = newConn.id;
+      selectedIds.value.clear();
+      triggerSave();
+      showToast('Created connector');
     }
+
+    connectingState.value = null;
+    draftConnector.value = null;
+    snapTarget.value = null;
+    return;
   }
 
-  if (dragState.value) {
-    dragState.value = null;
+  // 2. Finish Endpoint Dragging
+  if (endpointDragState.value) {
+    endpointDragState.value = null;
+    snapTarget.value = null;
+    triggerSave();
+    return;
+  }
+
+  // 3. Finish Object Dragging
+  if (isDraggingObjects.value) {
+    isDraggingObjects.value = false;
+    dragStartPos.value = null;
+    dragObjectOffsets.value.clear();
     triggerSave();
   }
 
+  // 4. Finish Resizing
   if (resizeState.value) {
     resizeState.value = null;
     triggerSave();
   }
-}
 
-// --- ZOOM (Centered around cursor) ---
-function onWheel(e: WheelEvent) {
-  if (editingId.value) return;
+  // 5. Finish Marquee
+  if (marqueeStart.value) {
+    marqueeStart.value = null;
+    marqueeCurrent.value = null;
+  }
 
-  const zoomFactor = Math.exp(-e.deltaY * 0.0015);
-  const newZoom = Math.min(Math.max(camera.zoom * zoomFactor, 0.08), 4.0);
-
-  const mouseWorld = screenToWorld(e.clientX, e.clientY);
-
-  camera.panX = e.clientX - mouseWorld.x * newZoom;
-  camera.panY = e.clientY - mouseWorld.y * newZoom;
-  camera.zoom = newZoom;
-
-  triggerSaveDebounced();
-}
-
-function zoomIn() {
-  const centerScreen = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-  const mouseWorld = screenToWorld(centerScreen.x, centerScreen.y);
-  const newZoom = Math.min(camera.zoom * 1.25, 4.0);
-  camera.panX = centerScreen.x - mouseWorld.x * newZoom;
-  camera.panY = centerScreen.y - mouseWorld.y * newZoom;
-  camera.zoom = newZoom;
-  triggerSave();
-}
-
-function zoomOut() {
-  const centerScreen = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-  const mouseWorld = screenToWorld(centerScreen.x, centerScreen.y);
-  const newZoom = Math.max(camera.zoom * 0.8, 0.08);
-  camera.panX = centerScreen.x - mouseWorld.x * newZoom;
-  camera.panY = centerScreen.y - mouseWorld.y * newZoom;
-  camera.zoom = newZoom;
-  triggerSave();
+  if (isPanning.value && e.button === 0) {
+    stopPanning();
+  }
 }
 
 // --- OBJECT INTERACTIONS ---
@@ -833,26 +1020,23 @@ function onObjectSelect(id: string, multi: boolean) {
 }
 
 function onStartObjectDrag(id: string, e: MouseEvent) {
-  if (isSpaceDown.value || activeTool.value === 'hand' || e.button !== 0) return;
+  if (activeTool.value === 'hand' || isSpaceDown.value || activeTool.value === 'connector') return;
 
   pushUndo();
 
-  const initialPositions = new Map<string, { x: number; y: number }>();
   if (!selectedIds.value.has(id)) {
     selectedIds.value = new Set([id]);
   }
 
+  isDraggingObjects.value = true;
+  dragStartPos.value = { x: e.clientX, y: e.clientY };
+  dragObjectOffsets.value.clear();
+
   for (const obj of objects.value) {
     if (selectedIds.value.has(obj.id)) {
-      initialPositions.set(obj.id, { x: obj.x, y: obj.y });
+      dragObjectOffsets.value.set(obj.id, { x: obj.x, y: obj.y });
     }
   }
-
-  dragState.value = {
-    startX: e.clientX,
-    startY: e.clientY,
-    initialPositions,
-  };
 }
 
 function onStartObjectResize(id: string, handle: string, e: MouseEvent) {
@@ -878,17 +1062,12 @@ function onStartConnect(objectId: string, anchor: AnchorPosition, e: MouseEvent)
   const obj = objects.value.find((o) => o.id === objectId);
   if (!obj) return;
 
-  let sx = obj.x + obj.width;
-  let sy = obj.y + obj.height / 2;
-  if (anchor === 'top') { sx = obj.x + obj.width / 2; sy = obj.y; }
-  else if (anchor === 'bottom') { sx = obj.x + obj.width / 2; sy = obj.y + obj.height; }
-  else if (anchor === 'left') { sx = obj.x; sy = obj.y + obj.height / 2; }
-
+  const p = getObjectAnchorPoint(obj, anchor);
   connectingState.value = {
     fromId: objectId,
     fromAnchor: anchor,
-    startX: sx,
-    startY: sy,
+    startX: p.x,
+    startY: p.y,
   };
 }
 
@@ -897,12 +1076,22 @@ function onSelectConnector(id: string, e: MouseEvent) {
   selectedConnectorId.value = id;
 }
 
+function onStartDragEndpoint(connectorId: string, endpoint: 'start' | 'end', e: MouseEvent) {
+  pushUndo();
+  selectedConnectorId.value = connectorId;
+  endpointDragState.value = {
+    connectorId,
+    endpoint,
+  };
+}
+
 function updateSelectedConnector(updated: Partial<BoardConnector>) {
   if (!selectedConnectorId.value) return;
-  pushUndo();
   const conn = connectors.value.find((c) => c.id === selectedConnectorId.value);
   if (conn) {
+    pushUndo();
     Object.assign(conn, updated);
+    conn.updated_at = Date.now();
     triggerSave();
   }
 }
@@ -927,14 +1116,14 @@ function startEditing(id: string) {
 
 function exitEditing() {
   editingId.value = null;
-  triggerSave();
 }
 
 function updateObjectContent(id: string, content: string) {
   const obj = objects.value.find((o) => o.id === id);
   if (obj) {
     obj.content = content;
-    triggerSaveDebounced();
+    obj.updated_at = Date.now();
+    triggerSave();
   }
 }
 
@@ -942,33 +1131,46 @@ function updateObjectTitle(id: string, title: string) {
   pushUndo();
   const obj = objects.value.find((o) => o.id === id);
   if (obj) {
-    obj.title = title || undefined;
+    obj.title = title;
+    obj.updated_at = Date.now();
     triggerSave();
+    showToast(`Renamed to "${title}"`);
   }
 }
 
 function updateObjectMeta(id: string, meta: any) {
   const obj = objects.value.find((o) => o.id === id);
   if (obj) {
-    obj.meta = meta;
+    obj.meta = { ...obj.meta, ...meta };
+    obj.updated_at = Date.now();
     triggerSave();
   }
 }
 
-async function copyObjectContent(obj: BoardObject) {
-  if (obj.kind === 'text' || obj.kind === 'code' || obj.kind === 'url') {
-    await api.copyText(obj.content);
-    showToast(`Copied to clipboard`);
-  } else if (obj.kind === 'image') {
-    await api.copyImage(obj.content);
+function copyObjectContent(obj: BoardObject) {
+  if (obj.kind === 'image') {
+    api.copyImage(obj.content);
     showToast('Copied image to clipboard');
+  } else {
+    api.copyText(obj.content);
+    showToast('Copied content to clipboard');
   }
 }
 
 function deleteSingleObject(id: string) {
   pushUndo();
   objects.value = objects.value.filter((o) => o.id !== id);
-  connectors.value = connectors.value.filter((c) => c.from_id !== id && c.to_id !== id);
+  // Safely detach connectors instead of destroying whole diagram
+  for (const c of connectors.value) {
+    if (c.from_id === id) {
+      c.from_id = undefined;
+      c.from_anchor = undefined;
+    }
+    if (c.to_id === id) {
+      c.to_id = undefined;
+      c.to_anchor = undefined;
+    }
+  }
   selectedIds.value.delete(id);
   if (editingId.value === id) editingId.value = null;
   api.deleteObjects([id]);
@@ -977,32 +1179,84 @@ function deleteSingleObject(id: string) {
 }
 
 function deleteSelected() {
-  if (selectedConnectorId.value) {
-    deleteConnector(selectedConnectorId.value);
-    return;
-  }
   if (selectedIds.value.size === 0 || editingId.value) return;
-
   pushUndo();
   const idsToDelete = Array.from(selectedIds.value);
   objects.value = objects.value.filter((o) => !selectedIds.value.has(o.id));
-  connectors.value = connectors.value.filter(
-    (c) => !(c.from_id && selectedIds.value.has(c.from_id)) && !(c.to_id && selectedIds.value.has(c.to_id))
-  );
+  for (const c of connectors.value) {
+    if (c.from_id && selectedIds.value.has(c.from_id)) {
+      c.from_id = undefined;
+      c.from_anchor = undefined;
+    }
+    if (c.to_id && selectedIds.value.has(c.to_id)) {
+      c.to_id = undefined;
+      c.to_anchor = undefined;
+    }
+  }
   selectedIds.value.clear();
   api.deleteObjects(idsToDelete);
   triggerSave();
-  showToast(`Deleted ${idsToDelete.length} objects`);
+  showToast(`Deleted ${idsToDelete.length} item(s)`);
 }
 
-// --- CREATION TOOLS ---
-function createNewNoteAt(worldX: number, worldY: number) {
+function getNextZIndex(): number {
+  if (objects.value.length === 0) return 1;
+  return Math.max(...objects.value.map((o) => o.z_index)) + 1;
+}
+
+// --- Z-ORDER ACTIONS ---
+function bringForward() {
+  if (selectedIds.value.size === 0 || editingId.value) return;
+  pushUndo();
+  const sorted = [...objects.value].sort((a, b) => a.z_index - b.z_index);
+  sorted.forEach((obj, idx) => { obj.z_index = idx + 1; });
+
+  for (let i = sorted.length - 2; i >= 0; i--) {
+    if (selectedIds.value.has(sorted[i].id) && !selectedIds.value.has(sorted[i + 1].id)) {
+      const tempZ = sorted[i].z_index;
+      sorted[i].z_index = sorted[i + 1].z_index;
+      sorted[i + 1].z_index = tempZ;
+      const temp = sorted[i];
+      sorted[i] = sorted[i + 1];
+      sorted[i + 1] = temp;
+    }
+  }
+  triggerSave();
+  showToast('Brought forward');
+}
+
+function sendBackward() {
+  if (selectedIds.value.size === 0 || editingId.value) return;
+  pushUndo();
+  const sorted = [...objects.value].sort((a, b) => a.z_index - b.z_index);
+  sorted.forEach((obj, idx) => { obj.z_index = idx + 1; });
+
+  for (let i = 1; i < sorted.length; i++) {
+    if (selectedIds.value.has(sorted[i].id) && !selectedIds.value.has(sorted[i - 1].id)) {
+      const tempZ = sorted[i].z_index;
+      sorted[i].z_index = sorted[i - 1].z_index;
+      sorted[i - 1].z_index = tempZ;
+      const temp = sorted[i];
+      sorted[i] = sorted[i - 1];
+      sorted[i - 1] = temp;
+    }
+  }
+  triggerSave();
+  showToast('Sent backward');
+}
+
+// --- CREATION ACTIONS ---
+function spawnTextNote(worldX?: number, worldY?: number) {
+  const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+  const targetX = worldX !== undefined ? worldX : centerWorld.x;
+  const targetY = worldY !== undefined ? worldY : centerWorld.y;
+
   const newObj: BoardObject = {
     id: crypto.randomUUID(),
     board_id: currentBoardId.value,
     kind: 'text',
-    x: Math.round(worldX - 160),
-    y: Math.round(worldY - 100),
+    x: Math.round(targetX - 160),
+    y: Math.round(targetY - 110),
     width: 320,
     height: 220,
     z_index: getNextZIndex(),
@@ -1015,56 +1269,57 @@ function createNewNoteAt(worldX: number, worldY: number) {
   selectedIds.value = new Set([newObj.id]);
   startEditing(newObj.id);
   triggerSave();
+  showToast('Created text note');
 }
 
-function spawnDiagramNode(type: DiagramNodeType, label: string, defaultIp: string) {
+function onSelectIconFromPalette(icon: IconItem) {
+  const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+  const size = 68;
+  const newObj: BoardObject = {
+    id: crypto.randomUUID(),
+    board_id: currentBoardId.value,
+    kind: 'icon',
+    x: Math.round(centerWorld.x - size / 2),
+    y: Math.round(centerWorld.y - size / 2),
+    width: size,
+    height: size,
+    z_index: getNextZIndex(),
+    title: icon.name,
+    content: icon.id,
+    meta: {
+      icon_id: icon.id,
+      icon_category: icon.category,
+      icon_label: icon.name,
+    },
+  };
+
+  pushUndo();
+  objects.value.push(newObj);
+  selectedIds.value = new Set([newObj.id]);
+  triggerSave();
+  showToast(`Placed ${icon.name}`);
+}
+
+function onCreateLinkFromModal(payload: { url: string; title: string }) {
+  isLinkModalOpen.value = false;
   const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
   const newObj: BoardObject = {
     id: crypto.randomUUID(),
     board_id: currentBoardId.value,
-    kind: 'diagram_node',
-    x: Math.round(centerWorld.x - 85),
-    y: Math.round(centerWorld.y - 31),
-    width: 170,
-    height: 62,
+    kind: 'url',
+    x: Math.round(centerWorld.x - 140),
+    y: Math.round(centerWorld.y - 40),
+    width: 280,
+    height: 75,
     z_index: getNextZIndex(),
-    title: label,
-    content: defaultIp,
-    meta: {
-      node_type: type,
-      subtitle: defaultIp,
-    },
+    title: payload.title,
+    content: payload.url,
   };
   pushUndo();
   objects.value.push(newObj);
   selectedIds.value = new Set([newObj.id]);
   triggerSave();
-  showToast(`Added ${label}`);
-}
-
-function promptCreateLink() {
-  const url = prompt('Enter link URL (e.g. https://docs.godotengine.org/):', 'https://');
-  if (url && url.trim()) {
-    const title = prompt('Enter link title:', 'Link Reference') || url;
-    const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
-    const newObj: BoardObject = {
-      id: crypto.randomUUID(),
-      board_id: currentBoardId.value,
-      kind: 'url',
-      x: Math.round(centerWorld.x - 140),
-      y: Math.round(centerWorld.y - 45),
-      width: 280,
-      height: 75,
-      z_index: getNextZIndex(),
-      title,
-      content: url.trim(),
-    };
-    pushUndo();
-    objects.value.push(newObj);
-    selectedIds.value = new Set([newObj.id]);
-    triggerSave();
-    showToast('Created link card');
-  }
+  showToast('Created link card');
 }
 
 function triggerImageFileInput() {
@@ -1087,28 +1342,37 @@ function onImageFileSelected(e: Event) {
   target.value = '';
 }
 
-// Sizing image relative to current viewport comfortably
 function spawnImageOnCanvas(dataUri: string, naturalW?: number, naturalH?: number, filename?: string) {
-  const targetWorld = screenToWorld(mouseScreen.x, mouseScreen.y);
+  const centerWorld = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
   const origW = naturalW || 450;
   const origH = naturalH || 300;
-  const aspect = origW / origH;
 
-  // Viewport-relative comfortable sizing (approx 35% of current view width, bounded between 240px and 550px)
   const viewWorldWidth = window.innerWidth / camera.zoom;
-  let targetW = Math.round(Math.min(550, Math.max(240, viewWorldWidth * 0.35)));
-  let targetH = Math.round(targetW / aspect);
+  const viewWorldHeight = window.innerHeight / camera.zoom;
+
+  let targetW = origW;
+  let targetH = origH;
+
+  // Scale down if larger than 45% of viewport, but NEVER upscale small originals!
+  const maxW = viewWorldWidth * 0.45;
+  const maxH = viewWorldHeight * 0.45;
+
+  if (targetW > maxW || targetH > maxH) {
+    const scale = Math.min(maxW / targetW, maxH / targetH);
+    targetW = Math.round(targetW * scale);
+    targetH = Math.round(targetH * scale);
+  }
 
   const newObj: BoardObject = {
     id: crypto.randomUUID(),
     board_id: currentBoardId.value,
     kind: 'image',
-    x: Math.round(targetWorld.x - targetW / 2),
-    y: Math.round(targetWorld.y - targetH / 2),
+    x: Math.round(centerWorld.x - targetW / 2),
+    y: Math.round(centerWorld.y - targetH / 2),
     width: targetW,
     height: targetH,
     z_index: getNextZIndex(),
-    title: filename || 'Image',
+    title: filename || 'Pasted Image',
     content: dataUri,
     meta: {
       original_filename: filename,
@@ -1127,7 +1391,7 @@ function spawnImageOnCanvas(dataUri: string, naturalW?: number, naturalH?: numbe
 async function pasteFromClipboard() {
   const clip = await api.getClipboard();
   if (clip.kind === 'empty') {
-    showToast('Clipboard is empty or unsupported format');
+    showToast('Clipboard is empty');
     return;
   }
 
@@ -1155,18 +1419,17 @@ async function pasteFromClipboard() {
       objects.value.push(newObj);
       selectedIds.value = new Set([newObj.id]);
     } else {
-      // Check if it looks like code
-      const isCode = text.includes('function') || text.includes('const ') || text.includes('import ') || text.includes('def ') || text.includes('{') && text.includes('}');
+      const isCode = text.includes('function') || text.includes('const ') || text.includes('import ') || text.includes('def ') || (text.includes('{') && text.includes('}'));
       const newObj: BoardObject = {
         id: crypto.randomUUID(),
         board_id: currentBoardId.value,
-        kind: isCode ? 'code' : 'text',
+        kind: 'text',
         x: Math.round(targetWorld.x - 160),
         y: Math.round(targetWorld.y - 100),
-        width: 340,
-        height: Math.min(480, Math.max(160, text.split('\n').length * 24 + 60)),
+        width: isCode ? 360 : 300,
+        height: isCode ? 220 : 180,
         z_index: getNextZIndex(),
-        title: isCode ? 'Snippet' : undefined,
+        title: isCode ? 'Snippet' : 'Note',
         content: text,
         meta: isCode ? { is_code: true } : undefined,
       };
@@ -1181,12 +1444,11 @@ async function pasteFromClipboard() {
 
 function onGlobalPaste(e: ClipboardEvent) {
   if (editingId.value) return;
-  e.preventDefault();
   pasteFromClipboard();
 }
 
 function onDrop(e: DragEvent) {
-  if (!e.dataTransfer) return;
+  if (!e.dataTransfer || editingId.value) return;
   const files = Array.from(e.dataTransfer.files);
   for (const file of files) {
     if (file.type.startsWith('image/')) {
@@ -1203,115 +1465,153 @@ function onDrop(e: DragEvent) {
   }
 }
 
-function getNextZIndex(): number {
-  if (objects.value.length === 0) return 1;
-  return Math.max(...objects.value.map((o) => o.z_index)) + 1;
+function openClearConfirm() {
+  isClearConfirmOpen.value = true;
 }
 
-function fitAll() {
-  if (objects.value.length === 0) {
-    resetCamera();
-    return;
-  }
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const obj of objects.value) {
-    minX = Math.min(minX, obj.x);
-    minY = Math.min(minY, obj.y);
-    maxX = Math.max(maxX, obj.x + obj.width);
-    maxY = Math.max(maxY, obj.y + obj.height);
-  }
-
-  const padding = 100;
-  const worldW = (maxX - minX) + padding * 2;
-  const worldH = (maxY - minY) + padding * 2;
-
-  const viewW = window.innerWidth;
-  const viewH = window.innerHeight - 48; // minus top bar
-
-  const scaleX = viewW / worldW;
-  const scaleY = viewH / worldH;
-  const fitZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.1), 1.5);
-
-  const worldCenterX = (minX + maxX) / 2;
-  const worldCenterY = (minY + maxY) / 2;
-
-  camera.zoom = fitZoom;
-  camera.panX = viewW / 2 - worldCenterX * fitZoom;
-  camera.panY = (viewH / 2 + 48) - worldCenterY * fitZoom;
-
+function confirmClearBoard() {
+  pushUndo();
+  objects.value = [];
+  connectors.value = [];
+  selectedIds.value.clear();
+  selectedConnectorId.value = null;
+  isClearConfirmOpen.value = false;
   triggerSave();
-  showToast('Fit view');
+  showToast('Board cleared');
 }
 
-function resetCamera() {
-  camera.panX = 0;
-  camera.panY = 48;
-  camera.zoom = 1;
-  triggerSave();
-}
-
-function clearBoard() {
-  if (confirm('Are you sure you want to clear all objects on this board?')) {
-    pushUndo();
-    objects.value = [];
-    connectors.value = [];
-    selectedIds.value.clear();
-    selectedConnectorId.value = null;
-    triggerSave();
-    showToast('Board cleared');
-  }
-}
-
-// --- SEARCH & NAVIGATION ---
+// --- SEARCH TO FOCUS ---
 function openSearch() {
-  if (editingId.value) return;
   isSearchOpen.value = true;
 }
 
-function handleSearchJump(result: SearchResult) {
-  previousCamera.value = {
-    panX: camera.panX,
-    panY: camera.panY,
-    zoom: camera.zoom,
-  };
+function handleSearchJump(result: ExtendedSearchResult) {
+  previousCamera.value = { panX: camera.panX, panY: camera.panY, zoom: camera.zoom };
+
+  const targetZoom = Math.max(camera.zoom, 1.0);
+  const targetCenterX = result.x + result.width / 2;
+  const targetCenterY = result.y + result.height / 2;
 
   const viewW = window.innerWidth;
   const viewH = window.innerHeight - 48;
-  const targetZoom = Math.min(Math.max(viewH / (result.height * 2.2), 0.6), 1.5);
-
-  const targetCenterX = result.x + result.width / 2;
-  const targetCenterY = result.y + result.height / 2;
 
   camera.zoom = targetZoom;
   camera.panX = viewW / 2 - targetCenterX * targetZoom;
   camera.panY = (viewH / 2 + 48) - targetCenterY * targetZoom;
 
-  selectedIds.value = new Set([result.id]);
-  highlightedId.value = result.id;
-  setTimeout(() => {
-    if (highlightedId.value === result.id) {
-      highlightedId.value = null;
-    }
-  }, 1600);
+  if (result.isConnector) {
+    selectedConnectorId.value = result.id;
+    selectedIds.value.clear();
+  } else {
+    selectedIds.value = new Set([result.id]);
+    selectedConnectorId.value = null;
+    highlightedId.value = result.id;
+    setTimeout(() => {
+      if (highlightedId.value === result.id) {
+        highlightedId.value = null;
+      }
+    }, 1800);
+  }
 
   triggerSave();
-  showToast(`Focused on ${result.title || result.kind}`);
 }
 
-function restorePreviousCamera() {
-  if (!previousCamera.value) return;
-  const prev = previousCamera.value;
-  camera.panX = prev.panX;
-  camera.panY = prev.panY;
-  camera.zoom = prev.zoom;
-  previousCamera.value = null;
-  showToast('Restored previous camera position');
-}
-
-// --- KEYBOARD SHORTCUTS ---
+// --- SHORTCUTS & KEYBOARD DISPATCHER ---
 function onKeyDown(e: KeyboardEvent) {
-  if (editingId.value || isSearchOpen.value || isShortcutsOpen.value) return;
+  // 1. If shortcuts modal is open, let its own Escape listener handle it
+  if (isShortcutsOpen.value) {
+    if (e.key === 'Escape') {
+      isShortcutsOpen.value = false;
+      return;
+    }
+    return;
+  }
+
+  // 2. If search modal is open
+  if (isSearchOpen.value) {
+    if (e.key === 'Escape') {
+      isSearchOpen.value = false;
+      return;
+    }
+    return;
+  }
+
+  // 3. If link modal is open
+  if (isLinkModalOpen.value) {
+    if (e.key === 'Escape') {
+      isLinkModalOpen.value = false;
+      return;
+    }
+    return;
+  }
+
+  // 4. If icon palette is open
+  if (isIconPaletteOpen.value) {
+    if (e.key === 'Escape') {
+      isIconPaletteOpen.value = false;
+      return;
+    }
+    return;
+  }
+
+  // 5. If clear confirm dialog is open
+  if (isClearConfirmOpen.value) {
+    if (e.key === 'Escape') {
+      isClearConfirmOpen.value = false;
+      return;
+    }
+    return;
+  }
+
+  // 6. Check if user is typing in an active text input, textarea, or CodeMirror editor
+  const target = e.target as HTMLElement | null;
+  const isTyping =
+    editingId.value !== null ||
+    (target && (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      Boolean(target.closest('.cm-editor')) ||
+      Boolean(target.closest('.cm-content'))
+    ));
+
+  if (isTyping) {
+    if (e.key === 'Escape' && editingId.value) {
+      exitEditing();
+    }
+    return;
+  }
+
+  // --- GENERAL CANVAS MODE SHORTCUTS ---
+
+  // Escape: prioritize cancellation of ongoing interaction, then selection, then tool
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    if (connectingState.value) {
+      connectingState.value = null;
+      draftConnector.value = null;
+      snapTarget.value = null;
+      return;
+    }
+    if (endpointDragState.value) {
+      endpointDragState.value = null;
+      snapTarget.value = null;
+      return;
+    }
+    if (selectedConnectorId.value) {
+      selectedConnectorId.value = null;
+      return;
+    }
+    if (selectedIds.value.size > 0) {
+      selectedIds.value.clear();
+      return;
+    }
+    if (activeTool.value !== 'select') {
+      activeTool.value = 'select';
+      return;
+    }
+    return;
+  }
 
   // Space for pan mode
   if (e.code === 'Space' && !isSpaceDown.value) {
@@ -1329,12 +1629,24 @@ function onKeyDown(e: KeyboardEvent) {
   }
   if (e.key === 'c' || e.key === 'C') {
     activeTool.value = 'connector';
-    showToast('Connector mode: drag from any object edge');
+    showToast('Connector mode: drag between any objects or canvas');
     return;
   }
-  if (e.key === 't' || e.key === 'T') {
-    activeTool.value = 'text';
-    showToast('Click anywhere to create text note');
+  if (e.key === 'n' || e.key === 'N' || e.key === 't' || e.key === 'T') {
+    e.preventDefault();
+    spawnTextNote();
+    return;
+  }
+
+  // Z-Order: `[` and `]`
+  if (e.key === ']') {
+    e.preventDefault();
+    bringForward();
+    return;
+  }
+  if (e.key === '[') {
+    e.preventDefault();
+    sendBackward();
     return;
   }
 
@@ -1355,21 +1667,10 @@ function onKeyDown(e: KeyboardEvent) {
   // Edit selected note: `i` or `Enter`
   if ((e.key === 'i' || e.key === 'Enter') && selectedIds.value.size === 1) {
     const singleId = Array.from(selectedIds.value)[0];
-    const target = objects.value.find((o) => o.id === singleId);
-    if (target && (target.kind === 'text' || target.kind === 'code')) {
+    const targetObj = objects.value.find((o) => o.id === singleId);
+    if (targetObj && (targetObj.kind === 'text' || targetObj.kind === 'code')) {
       e.preventDefault();
       startEditing(singleId);
-      return;
-    }
-  }
-
-  // Copy selected object: `Ctrl+C`
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && selectedIds.value.size === 1) {
-    const id = Array.from(selectedIds.value)[0];
-    const obj = objects.value.find((o) => o.id === id);
-    if (obj) {
-      e.preventDefault();
-      copyObjectContent(obj);
       return;
     }
   }
@@ -1388,8 +1689,19 @@ function onKeyDown(e: KeyboardEvent) {
     }
   }
 
-  // Jump Back to previous camera: `Backspace` (when nothing selected) or `Ctrl+O`
-  if ((e.key === 'Backspace' && selectedIds.value.size === 0 && !selectedConnectorId.value) || ((e.ctrlKey || e.metaKey) && e.key === 'o')) {
+  // Copy: `Ctrl+C`
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && selectedIds.value.size === 1) {
+    const id = Array.from(selectedIds.value)[0];
+    const obj = objects.value.find((o) => o.id === id);
+    if (obj) {
+      e.preventDefault();
+      copyObjectContent(obj);
+      return;
+    }
+  }
+
+  // Jump Back to previous camera: `Ctrl+O`
+  if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
     if (previousCamera.value) {
       e.preventDefault();
       restorePreviousCamera();
@@ -1401,6 +1713,13 @@ function onKeyDown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === '0') {
     e.preventDefault();
     fitAll();
+    return;
+  }
+
+  // Reset 100%: `Ctrl+1`
+  if ((e.ctrlKey || e.metaKey) && e.key === '1') {
+    e.preventDefault();
+    resetCamera();
     return;
   }
 
@@ -1418,14 +1737,6 @@ function onKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // Esc: deselect all & return to select tool
-  if (e.key === 'Escape') {
-    selectedIds.value.clear();
-    selectedConnectorId.value = null;
-    activeTool.value = 'select';
-    return;
-  }
-
   // Nudge selection with Arrow keys or h/j/k/l
   const step = e.shiftKey ? 40 : 8;
   let nudgeX = 0;
@@ -1438,13 +1749,7 @@ function onKeyDown(e: KeyboardEvent) {
   if (nudgeX !== 0 || nudgeY !== 0) {
     if (selectedIds.value.size > 0) {
       e.preventDefault();
-      for (const obj of objects.value) {
-        if (selectedIds.value.has(obj.id)) {
-          obj.x += nudgeX;
-          obj.y += nudgeY;
-        }
-      }
-      triggerSaveDebounced();
+      nudgeSelection(nudgeX, nudgeY);
     }
   }
 }
@@ -1455,31 +1760,41 @@ function onKeyUp(e: KeyboardEvent) {
   }
 }
 
-// --- ALWAYS ON TOP ---
-async function toggleAlwaysOnTop() {
-  alwaysOnTop.value = !alwaysOnTop.value;
-  await api.setAlwaysOnTop(alwaysOnTop.value);
-  showToast(alwaysOnTop.value ? 'Always on Top Enabled' : 'Always on Top Disabled');
+function nudgeSelection(dx: number, dy: number) {
+  pushUndo();
+  for (const obj of objects.value) {
+    if (selectedIds.value.has(obj.id)) {
+      obj.x += dx;
+      obj.y += dy;
+    }
+  }
+  triggerSave();
 }
 
 // --- PERSISTENCE ---
-let saveTimer: any = null;
-function triggerSaveDebounced() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    triggerSave();
+let saveDebounceTimer: any = null;
+function triggerSave() {
+  if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+  saveDebounceTimer = setTimeout(async () => {
+    try {
+      await api.saveBoard(
+        currentBoardId.value,
+        camera.panX,
+        camera.panY,
+        camera.zoom,
+        objects.value,
+        connectors.value
+      );
+    } catch (err) {
+      console.error('Failed to autosave board:', err);
+    }
   }, 400);
 }
 
-function triggerSave() {
-  api.saveBoard(
-    currentBoardId.value,
-    camera.panX,
-    camera.panY,
-    camera.zoom,
-    objects.value,
-    connectors.value
-  );
+async function toggleAlwaysOnTop() {
+  alwaysOnTop.value = !alwaysOnTop.value;
+  await api.setAlwaysOnTop(alwaysOnTop.value);
+  showToast(alwaysOnTop.value ? 'Pinboard is always on top' : 'Always on top disabled');
 }
 </script>
 
@@ -1490,30 +1805,19 @@ function triggerSave() {
   height: 100vh;
   overflow: hidden;
   background-color: #0b0c14;
+  user-select: none;
 }
 
 .canvas-viewport {
   position: absolute;
   top: 48px;
   left: 0;
-  width: 100vw;
-  height: calc(100vh - 48px);
+  right: 0;
+  bottom: 0;
   overflow: hidden;
-  background-color: #0b0c14;
   outline: none;
-  cursor: default;
-}
-
-.tool-hand .canvas-viewport {
-  cursor: grab !important;
-}
-
-.canvas-viewport.is-panning {
-  cursor: grabbing !important;
-}
-
-.canvas-viewport.cursor-crosshair {
-  cursor: crosshair !important;
+  background-color: #0b0c14;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1.2px, transparent 1.2px);
 }
 
 .canvas-world {
@@ -1523,66 +1827,128 @@ function triggerSave() {
   width: 100%;
   height: 100%;
   pointer-events: auto;
-  transform-style: flat;
-  backface-visibility: visible;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Flash Highlight when jumping to object from search */
-.flash-highlight {
-  animation: pulseHighlight 1.5s ease-out;
-}
-
-@keyframes pulseHighlight {
-  0% {
-    box-shadow: 0 0 0 6px #c084fc, 0 0 40px #a855f7;
-    transform: scale(1.02);
-  }
-  50% {
-    box-shadow: 0 0 0 4px #c084fc, 0 0 25px #a855f7;
-  }
-  100% {
-    box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.3), 0 8px 24px rgba(0, 0, 0, 0.5);
-  }
-}
-
-/* Marquee Selection Rectangle */
+/* Marquee Selection Box */
 .selection-marquee {
   position: absolute;
-  border: 1px dashed #a855f7;
-  background: rgba(168, 85, 247, 0.12);
+  border: 1px dashed rgba(192, 132, 252, 0.85);
+  background: rgba(192, 132, 252, 0.12);
   pointer-events: none;
-  z-index: 999;
+  z-index: 10030;
 }
 
-/* Toast message */
+/* Toast */
 .canvas-toast {
   position: fixed;
-  bottom: 64px;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(23, 24, 40, 0.95);
+  background: rgba(20, 21, 37, 0.95);
   backdrop-filter: blur(8px);
-  border: 1px solid #a855f7;
-  color: #f4f4f5;
-  padding: 7px 18px;
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 600;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
-  z-index: 9999;
+  color: #f8fafc;
+  border: 1px solid #2d304a;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
+  z-index: 10090;
   pointer-events: none;
 }
 
 .toast-enter-active,
 .toast-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
-
 .toast-enter-from,
 .toast-leave-to {
   opacity: 0;
-  transform: translate(-50%, 10px);
+  transform: translate(-50%, 8px);
+}
+
+/* Flash highlight animation for search jump */
+:deep(.flash-highlight) {
+  animation: flashRing 1.8s ease-out;
+}
+
+@keyframes flashRing {
+  0% { box-shadow: 0 0 0 6px rgba(192, 132, 252, 0.9); }
+  50% { box-shadow: 0 0 0 12px rgba(192, 132, 252, 0.4); }
+  100% { box-shadow: none; }
+}
+
+/* Clear Board Confirmation Dialog */
+.confirm-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 10090;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog {
+  width: 380px;
+  max-width: 90vw;
+  background: #141525;
+  border: 1px solid #2a2c42;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75);
+}
+
+.confirm-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 8px;
+}
+
+.confirm-msg {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.5;
+  margin-bottom: 18px;
+}
+
+.confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.btn {
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid #2f324d;
+  color: #cbd5e1;
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f8fafc;
+}
+
+.btn-danger {
+  background: #e11d48;
+  border: 1px solid #f43f5e;
+  color: #ffffff;
+}
+.btn-danger:hover {
+  background: #f43f5e;
 }
 </style>
