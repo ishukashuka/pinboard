@@ -34,6 +34,9 @@
           />
           <div v-else class="image-title-text" @dblclick.stop="startEditImageTitle">
             <span class="img-name">{{ object.title || 'Image' }}</span>
+            <button class="image-rename-btn" title="Duplicate Image (Ctrl+D)" @click.stop="$emit('duplicate', object.id)">
+              <CopyPlus :size="10" />
+            </button>
             <button class="image-rename-btn" title="Rename Image" @click.stop="startEditImageTitle">
               <Pencil :size="10" />
             </button>
@@ -107,16 +110,25 @@
               {{ object.title || 'Note' }}
             </span>
           </div>
-          <button
-            class="note-action-btn"
-            title="Copy Note Content"
-            @click.stop="$emit('copy-content', object)"
-          >
-            <Copy :size="12" />
-          </button>
+          <div class="note-actions">
+            <button
+              class="note-action-btn"
+              title="Duplicate Note (Ctrl+D)"
+              @click.stop="$emit('duplicate', object.id)"
+            >
+              <CopyPlus :size="12" />
+            </button>
+            <button
+              class="note-action-btn"
+              title="Copy Note Content"
+              @click.stop="$emit('copy-content', object)"
+            >
+              <Copy :size="12" />
+            </button>
+          </div>
         </div>
 
-        <div class="note-body">
+        <div class="note-body" :class="{ 'is-editing': isEditing }">
           <div v-if="isEditing" class="editor-wrap" @mousedown.stop>
             <CodeMirrorEditor
               :model-value="object.content"
@@ -129,7 +141,7 @@
           </div>
           <div v-else class="note-content-preview">
             <div v-if="parsedLines.length === 0" class="empty-note-hint">
-              Empty note. Double-click or press Enter to edit...
+              Empty note. Press i or Enter to edit...
             </div>
             <!-- Formatted Markdown Checkboxes & Content -->
             <div
@@ -255,6 +267,7 @@ import { computed, ref, nextTick } from 'vue';
 import {
   BookOpen,
   Copy,
+  CopyPlus,
   Check,
   Code2,
   Link as LinkIcon,
@@ -293,6 +306,7 @@ const emit = defineEmits<{
   (e: 'update-title', id: string, title: string): void;
   (e: 'update-meta', id: string, meta: any): void;
   (e: 'copy-content', object: BoardObject): void;
+  (e: 'duplicate', id: string): void;
   (e: 'delete', id: string): void;
   (e: 'save-request'): void;
 }>();
@@ -303,7 +317,7 @@ const anchors: AnchorPosition[] = ['top', 'right', 'bottom', 'left'];
 const isHovered = ref(false);
 
 const objectStyle = computed(() => ({
-  transform: `translate(${props.object.x}px, ${props.object.y}px)`,
+  transform: `translate(${Math.round(props.object.x)}px, ${Math.round(props.object.y)}px)`,
   width: `${props.object.width}px`,
   height: `${props.object.height}px`,
   zIndex: props.isSelected ? 500 + props.object.z_index : 10 + props.object.z_index,
@@ -593,6 +607,18 @@ function onContentChange(newContent: string) {
   overflow: hidden;
   background: transparent;
   position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.board-object:hover .image-container {
+  border-color: rgba(192, 132, 252, 0.35);
+  box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.15);
+}
+
+.board-object.is-selected .image-container {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .board-image {
@@ -706,10 +732,12 @@ function onContentChange(newContent: string) {
 .note-card {
   width: 100%;
   height: 100%;
+  min-width: 180px;
+  min-height: 90px;
   background: #171828;
   border: 1px solid #282a42;
-  border-radius: 14px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -719,7 +747,7 @@ function onContentChange(newContent: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 7px 12px;
   border-bottom: 1px solid #222338;
 }
 
@@ -739,6 +767,12 @@ function onContentChange(newContent: string) {
   color: #f1f5f9;
 }
 
+.note-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .note-action-btn {
   background: transparent;
   border: none;
@@ -754,10 +788,14 @@ function onContentChange(newContent: string) {
 
 .note-body {
   flex: 1;
-  padding: 12px 14px;
+  padding: 10px 14px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.note-body.is-editing {
+  padding: 0;
 }
 
 .editor-wrap {

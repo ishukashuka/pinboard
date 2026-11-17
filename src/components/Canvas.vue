@@ -98,6 +98,7 @@
           @update-title="updateObjectTitle"
           @update-meta="updateObjectMeta"
           @copy-content="copyObjectContent"
+          @duplicate="duplicateSingleObject"
           @delete="deleteSingleObject"
           @save-request="triggerSave"
         />
@@ -113,6 +114,7 @@
         :screen-x="selectedConnectorScreenPos.x"
         :screen-y="selectedConnectorScreenPos.y"
         @update="updateSelectedConnector"
+        @duplicate="duplicateConnector"
         @delete="deleteConnector"
       />
 
@@ -288,6 +290,14 @@ const isSpaceDown = ref(false);
 // Mouse pointer coordinates in screen space
 const mouseScreen = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 
+// Internal Clipboard Buffer
+interface InternalClipboard {
+  objects: BoardObject[];
+  connectors: BoardConnector[];
+}
+const internalClipboard = ref<InternalClipboard | null>(null);
+let pasteCount = 0;
+
 // Undo/Redo Stacks
 interface HistorySnapshot {
   objects: BoardObject[];
@@ -353,10 +363,15 @@ const canvasCursor = computed(() => {
 });
 
 // Viewport styles
-const worldTransformStyle = computed(() => ({
-  transform: `translate(${camera.panX}px, ${camera.panY}px) scale(${camera.zoom})`,
-  transformOrigin: '0 0',
-}));
+const worldTransformStyle = computed(() => {
+  const panX = Math.round(camera.panX);
+  const panY = Math.round(camera.panY);
+  const zoom = Math.abs(camera.zoom - 1) < 0.005 ? 1 : camera.zoom;
+  return {
+    transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+    transformOrigin: '0 0',
+  };
+});
 
 const gridStyle = computed(() => {
   const size = 28 * camera.zoom;
@@ -526,12 +541,15 @@ onMounted(async () => {
   await loadBoardData(currentBoardId.value);
 
   // Global capture interception for middle-mouse panning and preventing Linux PRIMARY selection paste
+  window.addEventListener('pointerdown', onGlobalPointerDownCapture, { capture: true });
+  window.addEventListener('pointermove', onGlobalPointerMoveCapture, { capture: true });
+  window.addEventListener('pointerup', onGlobalPointerUpCapture, { capture: true });
+  window.addEventListener('pointercancel', onGlobalPointerCancelCapture, { capture: true });
+
   window.addEventListener('mousedown', onGlobalMouseDownCapture, { capture: true });
-  window.addEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
   window.addEventListener('mousemove', onGlobalMouseMoveCapture, { capture: true });
   window.addEventListener('mouseup', onGlobalMouseUpCapture, { capture: true });
-  window.addEventListener('pointerdown', onGlobalPointerDownCapture, { capture: true });
-  window.addEventListener('pointerup', onGlobalPointerUpCapture, { capture: true });
+  window.addEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
   window.addEventListener('blur', onWindowBlur);
 
   window.addEventListener('keydown', onKeyDown);
@@ -544,12 +562,15 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', onGlobalPointerDownCapture, { capture: true });
+  window.removeEventListener('pointermove', onGlobalPointerMoveCapture, { capture: true });
+  window.removeEventListener('pointerup', onGlobalPointerUpCapture, { capture: true });
+  window.removeEventListener('pointercancel', onGlobalPointerCancelCapture, { capture: true });
+
   window.removeEventListener('mousedown', onGlobalMouseDownCapture, { capture: true });
-  window.removeEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
   window.removeEventListener('mousemove', onGlobalMouseMoveCapture, { capture: true });
   window.removeEventListener('mouseup', onGlobalMouseUpCapture, { capture: true });
-  window.removeEventListener('pointerdown', onGlobalPointerDownCapture, { capture: true });
-  window.removeEventListener('pointerup', onGlobalPointerUpCapture, { capture: true });
+  window.removeEventListener('auxclick', onGlobalAuxClickCapture, { capture: true });
   window.removeEventListener('blur', onWindowBlur);
 
   window.removeEventListener('keydown', onKeyDown);
@@ -592,11 +613,22 @@ function onBoardRenamed(name: string) {
 }
 
 // --- GLOBAL CAPTURE HANDLERS FOR PANNING & MIDDLE-CLICK ---
+function onGlobalPointerDownCapture(e: PointerEvent) {
+  mouseScreen.x = e.clientX;
+  mouseScreen.y = e.clientY;
+
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    startPanning(e.clientX, e.clientY);
+  }
+}
+
 function onGlobalMouseDownCapture(e: MouseEvent) {
   mouseScreen.x = e.clientX;
   mouseScreen.y = e.clientY;
 
-  // Middle mouse button (button === 1) starts panning
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
@@ -605,20 +637,15 @@ function onGlobalMouseDownCapture(e: MouseEvent) {
   }
 }
 
-function onGlobalPointerDownCapture(e: PointerEvent) {
-  if (e.button === 1) {
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    startPanning(e.clientX, e.clientY);
-  }
-}
+function onGlobalPointerMoveCapture(e: PointerEvent) {
+  mouseScreen.x = e.clientX;
+  mouseScreen.y = e.clientY;
 
-function onGlobalAuxClickCapture(e: MouseEvent) {
-  if (e.button === 1) {
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
+  if (isPanning.value) {
+    const dx = e.clientX - panStart.value.x;
+    const dy = e.clientY - panStart.value.y;
+    camera.panX = panCameraStart.value.x + dx;
+    camera.panY = panCameraStart.value.y + dy;
   }
 }
 
@@ -634,6 +661,17 @@ function onGlobalMouseMoveCapture(e: MouseEvent) {
   }
 }
 
+function onGlobalPointerUpCapture(e: PointerEvent) {
+  if (e.button === 1) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (isPanning.value) {
+      stopPanning();
+    }
+  }
+}
+
 function onGlobalMouseUpCapture(e: MouseEvent) {
   if (e.button === 1) {
     e.preventDefault();
@@ -645,14 +683,17 @@ function onGlobalMouseUpCapture(e: MouseEvent) {
   }
 }
 
-function onGlobalPointerUpCapture(e: PointerEvent) {
+function onGlobalPointerCancelCapture(_e: PointerEvent) {
+  if (isPanning.value) {
+    stopPanning();
+  }
+}
+
+function onGlobalAuxClickCapture(e: MouseEvent) {
   if (e.button === 1) {
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    if (isPanning.value) {
-      stopPanning();
-    }
   }
 }
 
@@ -1343,10 +1384,10 @@ function spawnTextNote(worldX?: number, worldY?: number) {
     id: crypto.randomUUID(),
     board_id: currentBoardId.value,
     kind: 'text',
-    x: Math.round(targetX - 160),
-    y: Math.round(targetY - 110),
-    width: 320,
-    height: 220,
+    x: Math.round(targetX - 130),
+    y: Math.round(targetY - 80),
+    width: 260,
+    height: 160,
     z_index: getNextZIndex(),
     title: 'Note',
     content: '',
@@ -1530,9 +1571,196 @@ async function pasteFromClipboard() {
   }
 }
 
+function copySelected() {
+  if (selectedIds.value.size === 0) return;
+
+  const selectedObjs = objects.value.filter((o) => selectedIds.value.has(o.id));
+  if (selectedObjs.length === 0) return;
+
+  const selectedConns = connectors.value.filter(
+    (c) => c.from_id && c.to_id && selectedIds.value.has(c.from_id) && selectedIds.value.has(c.to_id)
+  );
+
+  internalClipboard.value = {
+    objects: JSON.parse(JSON.stringify(selectedObjs)),
+    connectors: JSON.parse(JSON.stringify(selectedConns)),
+  };
+  pasteCount = 0;
+
+  if (selectedObjs.length === 1) {
+    const single = selectedObjs[0];
+    if (single.kind === 'image') {
+      api.copyImage(single.content);
+    } else {
+      api.copyText(single.content);
+    }
+  }
+
+  showToast(`Copied ${selectedObjs.length} item(s)`);
+}
+
+async function paste() {
+  if (internalClipboard.value && internalClipboard.value.objects.length > 0) {
+    pasteCount += 1;
+    const copiedObjs = internalClipboard.value.objects;
+    const copiedConns = internalClipboard.value.connectors;
+
+    pushUndo();
+
+    const targetWorld = screenToWorld(mouseScreen.x, mouseScreen.y);
+    let minX = Infinity;
+    let minY = Infinity;
+    for (const o of copiedObjs) {
+      if (o.x < minX) minX = o.x;
+      if (o.y < minY) minY = o.y;
+    }
+
+    const offset = (24 * pasteCount) / camera.zoom;
+    const destX = targetWorld.x + offset;
+    const destY = targetWorld.y + offset;
+
+    const idMap = new Map<string, string>();
+    const newObjects: BoardObject[] = [];
+
+    for (const orig of copiedObjs) {
+      const newId = crypto.randomUUID();
+      idMap.set(orig.id, newId);
+
+      const newObj: BoardObject = {
+        ...JSON.parse(JSON.stringify(orig)),
+        id: newId,
+        board_id: currentBoardId.value,
+        x: Math.round(destX + (orig.x - minX)),
+        y: Math.round(destY + (orig.y - minY)),
+        z_index: getNextZIndex(),
+      };
+      newObjects.push(newObj);
+      objects.value.push(newObj);
+    }
+
+    for (const conn of copiedConns) {
+      if (conn.from_id && conn.to_id && idMap.has(conn.from_id) && idMap.has(conn.to_id)) {
+        const newConn: BoardConnector = {
+          ...JSON.parse(JSON.stringify(conn)),
+          id: crypto.randomUUID(),
+          board_id: currentBoardId.value,
+          from_id: idMap.get(conn.from_id)!,
+          to_id: idMap.get(conn.to_id)!,
+          from_x: Math.round(destX + (conn.from_x - minX)),
+          from_y: Math.round(destY + (conn.from_y - minY)),
+          to_x: Math.round(destX + (conn.to_x - minX)),
+          to_y: Math.round(destY + (conn.to_y - minY)),
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        };
+        connectors.value.push(newConn);
+      }
+    }
+
+    selectedIds.value = new Set(newObjects.map((o) => o.id));
+    selectedConnectorId.value = null;
+    triggerSave();
+    showToast(`Pasted ${newObjects.length} item(s)`);
+    return;
+  }
+
+  await pasteFromClipboard();
+}
+
+function duplicateSelected() {
+  if (selectedConnectorId.value && selectedIds.value.size === 0) {
+    duplicateConnector(selectedConnectorId.value);
+    return;
+  }
+
+  if (selectedIds.value.size === 0) return;
+
+  const selectedObjs = objects.value.filter((o) => selectedIds.value.has(o.id));
+  if (selectedObjs.length === 0) return;
+
+  pushUndo();
+
+  const offset = 24 / camera.zoom;
+  const idMap = new Map<string, string>();
+  const newObjects: BoardObject[] = [];
+
+  for (const orig of selectedObjs) {
+    const newId = crypto.randomUUID();
+    idMap.set(orig.id, newId);
+
+    const newObj: BoardObject = {
+      ...JSON.parse(JSON.stringify(orig)),
+      id: newId,
+      board_id: currentBoardId.value,
+      x: Math.round(orig.x + offset),
+      y: Math.round(orig.y + offset),
+      z_index: getNextZIndex(),
+    };
+    newObjects.push(newObj);
+    objects.value.push(newObj);
+  }
+
+  for (const conn of connectors.value) {
+    if (conn.from_id && conn.to_id && idMap.has(conn.from_id) && idMap.has(conn.to_id)) {
+      const newConn: BoardConnector = {
+        ...JSON.parse(JSON.stringify(conn)),
+        id: crypto.randomUUID(),
+        board_id: currentBoardId.value,
+        from_id: idMap.get(conn.from_id)!,
+        to_id: idMap.get(conn.to_id)!,
+        from_x: Math.round(conn.from_x + offset),
+        from_y: Math.round(conn.from_y + offset),
+        to_x: Math.round(conn.to_x + offset),
+        to_y: Math.round(conn.to_y + offset),
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+      connectors.value.push(newConn);
+    }
+  }
+
+  selectedIds.value = new Set(newObjects.map((o) => o.id));
+  selectedConnectorId.value = null;
+  triggerSave();
+  showToast(`Duplicated ${newObjects.length} item(s)`);
+}
+
+function duplicateSingleObject(id: string) {
+  selectedIds.value = new Set([id]);
+  selectedConnectorId.value = null;
+  duplicateSelected();
+}
+
+function duplicateConnector(id: string) {
+  const conn = connectors.value.find((c) => c.id === id);
+  if (!conn) return;
+
+  pushUndo();
+  const offset = 24 / camera.zoom;
+  const newConn: BoardConnector = {
+    ...JSON.parse(JSON.stringify(conn)),
+    id: crypto.randomUUID(),
+    board_id: currentBoardId.value,
+    from_id: undefined,
+    to_id: undefined,
+    from_x: Math.round(conn.from_x + offset),
+    from_y: Math.round(conn.from_y + offset),
+    to_x: Math.round(conn.to_x + offset),
+    to_y: Math.round(conn.to_y + offset),
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  };
+  connectors.value.push(newConn);
+  selectedIds.value.clear();
+  selectedConnectorId.value = newConn.id;
+  triggerSave();
+  showToast('Duplicated connector');
+}
+
 function onGlobalPaste(e: ClipboardEvent) {
   if (editingId.value) return;
-  pasteFromClipboard();
+  e.preventDefault();
+  paste();
 }
 
 function onDrop(e: DragEvent) {
@@ -1777,15 +2005,27 @@ function onKeyDown(e: KeyboardEvent) {
     }
   }
 
+  // Duplicate: `Ctrl+D`
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+    e.preventDefault();
+    duplicateSelected();
+    return;
+  }
+
   // Copy: `Ctrl+C`
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && selectedIds.value.size === 1) {
-    const id = Array.from(selectedIds.value)[0];
-    const obj = objects.value.find((o) => o.id === id);
-    if (obj) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+    if (selectedIds.value.size > 0) {
       e.preventDefault();
-      copyObjectContent(obj);
+      copySelected();
       return;
     }
+  }
+
+  // Paste: `Ctrl+V`
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+    e.preventDefault();
+    paste();
+    return;
   }
 
   // Jump Back to previous camera: `Ctrl+O`
@@ -1921,6 +2161,10 @@ async function toggleAlwaysOnTop() {
   width: 100%;
   height: 100%;
   pointer-events: auto;
+  transform-style: flat;
+  backface-visibility: visible;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Marquee Selection Box */

@@ -29,8 +29,9 @@
 
         <div class="shortcut-section">
           <div class="section-title">Object Actions</div>
-          <div class="shortcut-row"><span class="sc-key">Ctrl + V</span><span class="sc-desc">Paste System Clipboard</span></div>
-          <div class="shortcut-row"><span class="sc-key">Ctrl + C</span><span class="sc-desc">Copy Selected Item</span></div>
+          <div class="shortcut-row"><span class="sc-key">Ctrl + D</span><span class="sc-desc">Duplicate Selection</span></div>
+          <div class="shortcut-row"><span class="sc-key">Ctrl + C</span><span class="sc-desc">Copy Item(s) / Text</span></div>
+          <div class="shortcut-row"><span class="sc-key">Ctrl + V</span><span class="sc-desc">Paste Item(s) / Clipboard</span></div>
           <div class="shortcut-row"><span class="sc-key">Delete</span><span class="sc-desc">Delete Selection</span></div>
           <div class="shortcut-row"><span class="sc-key">Ctrl + Z</span><span class="sc-desc">Undo</span></div>
           <div class="shortcut-row"><span class="sc-key">Ctrl + Shift + Z</span><span class="sc-desc">Redo</span></div>

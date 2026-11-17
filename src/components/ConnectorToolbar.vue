@@ -162,7 +162,14 @@
 
     <div class="tb-divider"></div>
 
-    <!-- 6. Delete Button -->
+    <!-- 6. Duplicate Button -->
+    <button class="tb-btn" title="Duplicate Connector (Ctrl+D)" @click="$emit('duplicate', connector.id)">
+      <CopyPlus :size="14" />
+    </button>
+
+    <div class="tb-divider"></div>
+
+    <!-- 7. Delete Button -->
     <button class="tb-btn btn-delete" title="Delete Connector" @click="$emit('delete', connector.id)">
       <Trash2 :size="14" />
     </button>
@@ -182,6 +189,7 @@ import {
   ChevronDown,
   X,
   Trash2,
+  CopyPlus,
 } from 'lucide-vue-next';
 import type { BoardConnector } from '../types';
 
@@ -194,6 +202,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update', updated: Partial<BoardConnector>): void;
   (e: 'delete', id: string): void;
+  (e: 'duplicate', id: string): void;
 }>();
 
 const toolbarRef = ref<HTMLDivElement | null>(null);
